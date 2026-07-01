@@ -5,6 +5,7 @@ import os
 import uuid
 import xmlrpc.client
 from typing import Any
+from urllib.parse import quote
 
 import streamlit as st
 
@@ -53,12 +54,10 @@ def inicializar_estado() -> None:
         "ultimo_producto_id": None,
         "cantidad_normal": 1,
         "precio_normal": 0.0,
-        "concepto_normal": "Venta regular",
         "preset_promocion": "1+1",
         "cantidad_cobrada": 1,
         "cantidad_gratis": 1,
         "precio_promocion": 0.0,
-        "referencia_promocion": "Promoción",
         "nota_pedido": "",
     }
 
@@ -991,17 +990,11 @@ def crear_pedido_odoo(
     for linea in carrito:
         cantidad = int(linea["cantidad"])
         precio = float(linea["precio_unitario"])
-        concepto = str(linea.get("concepto", "")).strip()
-        nombre_producto = str(linea["nombre_producto"])
-
         valores_linea: dict[str, Any] = {
             "product_id": int(linea["product_id"]),
             "product_uom_qty": cantidad,
             "price_unit": precio,
         }
-
-        if concepto:
-            valores_linea["name"] = f"{nombre_producto}\n{concepto}"
 
         lineas_odoo.append((0, 0, valores_linea))
 
@@ -1070,15 +1063,62 @@ def texto_seguro(valor: Any) -> str:
     return html.escape(str(valor or ""))
 
 
+def construir_mensaje_whatsapp(
+    nombre_cliente: str,
+    carrito: list[dict[str, Any]],
+) -> str:
+    """
+    Genera un mensaje breve para compartir en el grupo de WhatsApp.
+
+    Solo incluye el nombre del cliente y los productos. Las líneas gratuitas
+    se identifican claramente, pero no se muestran precios, folio ni total.
+    """
+
+    lineas_mensaje = [str(nombre_cliente).strip() or "Cliente", ""]
+
+    for linea in carrito:
+        nombre = str(
+            linea.get("nombre_producto")
+            or "Producto sin nombre"
+        ).strip()
+        cantidad = max(1, int(linea.get("cantidad") or 1))
+        precio = float(linea.get("precio_unitario") or 0.0)
+        parte_promocion = str(
+            linea.get("parte_promocion") or ""
+        ).lower()
+        tipo = str(linea.get("tipo") or "").lower()
+
+        es_gratis = (
+            precio == 0.0
+            or parte_promocion == "gratis"
+            or tipo in {"gratis", "promocion_gratis"}
+        )
+
+        texto_linea = f"{cantidad} x {nombre}"
+        if es_gratis:
+            texto_linea += " (GRATIS)"
+
+        lineas_mensaje.append(texto_linea)
+
+    return "\n".join(lineas_mensaje).strip()
+
+
+def crear_enlace_whatsapp(mensaje: str) -> str:
+    """Abre WhatsApp con el texto listo para elegir el grupo."""
+
+    return (
+        "https://api.whatsapp.com/send?text="
+        + quote(mensaje, safe="")
+    )
+
+
 def crear_linea_carrito(
     producto: dict[str, Any],
     cantidad: int,
     precio_unitario: float,
-    concepto: str,
     tipo: str,
     grupo_promocion: str | None = None,
     parte_promocion: str | None = None,
-    referencia_promocion: str | None = None,
 ) -> dict[str, Any]:
     return {
         "linea_id": uuid.uuid4().hex,
@@ -1088,11 +1128,9 @@ def crear_linea_carrito(
         "precio_lista": float(producto.get("list_price") or 0.0),
         "cantidad": max(1, int(cantidad)),
         "precio_unitario": max(0.0, float(precio_unitario)),
-        "concepto": concepto.strip() or "Venta regular",
         "tipo": tipo,
         "grupo_promocion": grupo_promocion,
         "parte_promocion": parte_promocion,
-        "referencia_promocion": referencia_promocion,
     }
 
 
@@ -1100,14 +1138,12 @@ def agregar_linea_normal(
     producto: dict[str, Any],
     cantidad: int,
     precio_unitario: float,
-    concepto: str,
 ) -> None:
     st.session_state.carrito.append(
         crear_linea_carrito(
             producto=producto,
             cantidad=cantidad,
             precio_unitario=precio_unitario,
-            concepto=concepto,
             tipo="venta",
         )
     )
@@ -1118,7 +1154,6 @@ def agregar_promocion(
     cantidad_cobrada: int,
     cantidad_gratis: int,
     precio_unitario: float,
-    referencia: str,
 ) -> None:
     """Agrega exactamente dos líneas del mismo producto."""
 
@@ -1126,11 +1161,6 @@ def agregar_promocion(
     gratis = max(1, int(cantidad_gratis))
     precio = max(0.0, float(precio_unitario))
     grupo = uuid.uuid4().hex
-    combinacion = f"{cobradas}+{gratis}"
-
-    referencia_limpia = referencia.strip()
-    if not referencia_limpia or referencia_limpia.lower() == "promoción":
-        referencia_limpia = f"Promoción {combinacion}"
 
     st.session_state.carrito.extend(
         [
@@ -1138,25 +1168,20 @@ def agregar_promocion(
                 producto=producto,
                 cantidad=cobradas,
                 precio_unitario=precio,
-                concepto=f"{referencia_limpia} · producto cobrado",
                 tipo="promocion_cobrada",
                 grupo_promocion=grupo,
                 parte_promocion="cobrada",
-                referencia_promocion=referencia_limpia,
             ),
             crear_linea_carrito(
                 producto=producto,
                 cantidad=gratis,
                 precio_unitario=0.0,
-                concepto=f"{referencia_limpia} · producto gratis",
                 tipo="promocion_gratis",
                 grupo_promocion=grupo,
                 parte_promocion="gratis",
-                referencia_promocion=referencia_limpia,
             ),
         ]
     )
-
 
 def buscar_linea(linea_id: str) -> dict[str, Any] | None:
     return next(
@@ -1181,7 +1206,6 @@ def limpiar_widgets_linea(linea_id: str) -> None:
     prefijos = (
         "cantidad_",
         "precio_",
-        "concepto_",
     )
     for prefijo in prefijos:
         st.session_state.pop(f"{prefijo}{linea_id}", None)
@@ -1207,7 +1231,6 @@ def duplicar_linea(linea_id: str) -> None:
             "linea_id": uuid.uuid4().hex,
             "grupo_promocion": None,
             "parte_promocion": None,
-            "referencia_promocion": None,
             "tipo": "venta",
             "cantidad": int(
                 st.session_state.get(
@@ -1219,12 +1242,6 @@ def duplicar_linea(linea_id: str) -> None:
                 st.session_state.get(
                     f"precio_{linea_id}",
                     linea["precio_unitario"],
-                )
-            ),
-            "concepto": str(
-                st.session_state.get(
-                    f"concepto_{linea_id}",
-                    linea["concepto"],
                 )
             ),
         }
@@ -1239,9 +1256,7 @@ def hacer_linea_gratis(linea_id: str) -> None:
 
     linea["precio_unitario"] = 0.0
     linea["tipo"] = "gratis"
-    linea["concepto"] = "Producto gratis / bonificación"
     st.session_state[f"precio_{linea_id}"] = 0.0
-    st.session_state[f"concepto_{linea_id}"] = linea["concepto"]
 
 
 def eliminar_promocion(grupo_id: str) -> None:
@@ -1260,7 +1275,6 @@ def eliminar_promocion(grupo_id: str) -> None:
     for linea_id in ids:
         limpiar_widgets_linea(linea_id)
 
-    st.session_state.pop(f"referencia_grupo_{grupo_id}", None)
 
 
 def duplicar_promocion(grupo_id: str) -> None:
@@ -1302,14 +1316,6 @@ def vaciar_carrito() -> None:
     for linea in st.session_state.carrito:
         limpiar_widgets_linea(str(linea["linea_id"]))
 
-    grupos = {
-        str(linea.get("grupo_promocion"))
-        for linea in st.session_state.carrito
-        if linea.get("grupo_promocion")
-    }
-    for grupo in grupos:
-        st.session_state.pop(f"referencia_grupo_{grupo}", None)
-
     st.session_state.carrito = []
 
 
@@ -1322,12 +1328,10 @@ def reiniciar_pedido() -> None:
         "ultimo_producto_id",
         "cantidad_normal",
         "precio_normal",
-        "concepto_normal",
         "preset_promocion",
         "cantidad_cobrada",
         "cantidad_gratis",
         "precio_promocion",
-        "referencia_promocion",
         "nota_pedido",
         "resultado_pedido",
         "mostrar_balloons",
@@ -1541,8 +1545,6 @@ def sincronizar_producto_seleccionado() -> None:
     st.session_state.cantidad_cobrada = 1
     st.session_state.cantidad_gratis = 1
     st.session_state.preset_promocion = "1+1"
-    st.session_state.concepto_normal = "Venta regular"
-    st.session_state.referencia_promocion = "Promoción"
     st.session_state.ultimo_producto_id = int(producto_id)
 
 
@@ -1574,9 +1576,28 @@ if resultado:
             "redondeos o reglas fiscales adicionales."
         )
 
+        st.divider()
+        st.markdown("### 📲 Compartir en WhatsApp")
+        st.caption(
+            "Abre WhatsApp, selecciona el grupo de pedidos y envía el texto."
+        )
+
+        enlace_whatsapp = str(resultado.get("enlace_whatsapp") or "")
+        texto_whatsapp = str(resultado.get("texto_whatsapp") or "")
+
+        if enlace_whatsapp:
+            st.link_button(
+                "🟢 Abrir WhatsApp",
+                enlace_whatsapp,
+                type="primary",
+                use_container_width=True,
+            )
+
+        with st.expander("Ver o copiar el mensaje", expanded=False):
+            st.code(texto_whatsapp, language=None)
+
         st.button(
             "➕ Capturar otro pedido",
-            type="primary",
             use_container_width=True,
             on_click=reiniciar_pedido,
         )
@@ -1771,12 +1792,6 @@ with col_producto:
                     key="precio_normal",
                 )
 
-            concepto_normal = st.text_input(
-                "Concepto",
-                placeholder="Venta regular, precio especial...",
-                key="concepto_normal",
-            )
-
             subtotal_normal = int(cantidad_normal) * float(precio_normal)
             st.caption(f"Subtotal de esta línea: {moneda(subtotal_normal)}")
 
@@ -1792,7 +1807,6 @@ with col_producto:
                         producto=producto_seleccionado,
                         cantidad=int(cantidad_normal),
                         precio_unitario=float(precio_normal),
-                        concepto=str(concepto_normal),
                     )
                     st.toast("Producto agregado", icon="✅")
                     st.rerun()
@@ -1837,12 +1851,6 @@ with col_producto:
                 key="precio_promocion",
             )
 
-            referencia_promocion = st.text_input(
-                "Referencia de la promoción",
-                placeholder="Ejemplo: campaña de julio",
-                key="referencia_promocion",
-            )
-
             combinacion = f"{int(cantidad_cobrada)}+{int(cantidad_gratis)}"
             total_entregado = int(cantidad_cobrada) + int(cantidad_gratis)
             subtotal_promocion = int(cantidad_cobrada) * float(precio_promocion)
@@ -1880,7 +1888,6 @@ with col_producto:
                         cantidad_cobrada=int(cantidad_cobrada),
                         cantidad_gratis=int(cantidad_gratis),
                         precio_unitario=float(precio_promocion),
-                        referencia=str(referencia_promocion),
                     )
                     st.toast(
                         f"Promoción {combinacion} agregada en dos líneas",
@@ -1938,16 +1945,11 @@ else:
             linea_id = str(linea["linea_id"])
             clave_cantidad = f"cantidad_{linea_id}"
             clave_precio = f"precio_{linea_id}"
-            clave_concepto = f"concepto_{linea_id}"
 
             st.session_state.setdefault(clave_cantidad, int(linea["cantidad"]))
             st.session_state.setdefault(
                 clave_precio,
                 float(linea["precio_unitario"]),
-            )
-            st.session_state.setdefault(
-                clave_concepto,
-                str(linea["concepto"]),
             )
 
             with st.container(border=True):
@@ -1993,16 +1995,8 @@ else:
                         key=clave_precio,
                     )
 
-                with st.expander("Detalles de la línea"):
-                    concepto = st.text_input(
-                        "Concepto para Odoo",
-                        key=clave_concepto,
-                        placeholder="Venta, precio especial o bonificación...",
-                    )
-
                 linea["cantidad"] = int(cantidad)
                 linea["precio_unitario"] = float(precio)
-                linea["concepto"] = str(concepto)
                 linea["tipo"] = "gratis" if float(precio) == 0.0 else "venta"
 
                 subtotal = int(cantidad) * float(precio)
@@ -2071,7 +2065,6 @@ else:
             key_cantidad_cobrada = f"cantidad_{id_cobrada}"
             key_precio_cobrada = f"precio_{id_cobrada}"
             key_cantidad_gratis = f"cantidad_{id_gratis}"
-            key_referencia = f"referencia_grupo_{grupo_id}"
 
             st.session_state.setdefault(
                 key_cantidad_cobrada,
@@ -2084,13 +2077,6 @@ else:
             st.session_state.setdefault(
                 key_cantidad_gratis,
                 int(gratis["cantidad"]),
-            )
-            st.session_state.setdefault(
-                key_referencia,
-                str(
-                    cobrada.get("referencia_promocion")
-                    or "Promoción"
-                ),
             )
 
             cantidad_cobrada_actual = int(st.session_state[key_cantidad_cobrada])
@@ -2186,34 +2172,11 @@ else:
                         unsafe_allow_html=True,
                     )
 
-                with st.expander("Referencia de la promoción"):
-                    referencia_editada = st.text_input(
-                        "Texto que aparecerá en Odoo",
-                        key=key_referencia,
-                        placeholder="Ejemplo: promoción de temporada",
-                    )
-
-                combinacion_editada = (
-                    f"{int(cantidad_cobrada_editada)}"
-                    f"+{int(cantidad_gratis_editada)}"
-                )
-                referencia_limpia = str(referencia_editada).strip()
-                if not referencia_limpia:
-                    referencia_limpia = f"Promoción {combinacion_editada}"
-
                 cobrada["cantidad"] = int(cantidad_cobrada_editada)
                 cobrada["precio_unitario"] = float(precio_cobrado_editado)
-                cobrada["referencia_promocion"] = referencia_limpia
-                cobrada["concepto"] = (
-                    f"{referencia_limpia} · producto cobrado"
-                )
 
                 gratis["cantidad"] = int(cantidad_gratis_editada)
                 gratis["precio_unitario"] = 0.0
-                gratis["referencia_promocion"] = referencia_limpia
-                gratis["concepto"] = (
-                    f"{referencia_limpia} · producto gratis"
-                )
 
                 ac1, ac2 = st.columns(2)
                 with ac1:
@@ -2331,15 +2294,30 @@ if enviar:
             )
 
             cliente = clientes_por_id[int(st.session_state.cliente_id)]
+            nombre_cliente = str(cliente.get("name") or "Cliente")
+
+            # Copiamos las líneas antes de cambiar de pantalla para conservar
+            # exactamente lo que se envió a Odoo.
+            carrito_enviado = [
+                dict(linea)
+                for linea in st.session_state.carrito
+            ]
+
+            texto_whatsapp = construir_mensaje_whatsapp(
+                nombre_cliente=nombre_cliente,
+                carrito=carrito_enviado,
+            )
 
             st.session_state.resultado_pedido = {
                 "folio": folio,
                 "estado": estado,
-                "cliente": cliente.get("name") or "Cliente",
+                "cliente": nombre_cliente,
                 "lineas": total_lineas,
                 "unidades": total_unidades,
                 "unidades_gratis": unidades_gratis,
                 "total": total_pedido,
+                "texto_whatsapp": texto_whatsapp,
+                "enlace_whatsapp": crear_enlace_whatsapp(texto_whatsapp),
             }
             st.session_state.mostrar_balloons = True
             st.rerun()
