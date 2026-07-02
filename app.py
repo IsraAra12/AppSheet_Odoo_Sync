@@ -18,7 +18,7 @@ from streamlit_js_eval import streamlit_js_eval
 # =============================================================================
 
 st.set_page_config(
-    page_title="RapyVet POS | Pedidos",
+    page_title="RapyVet Pedidos",
     page_icon="🐾",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -1055,7 +1055,7 @@ def crear_pedido_odoo(
     valores: dict[str, Any] = {
         "partner_id": int(cliente_id),
         "order_line": lineas_odoo,
-        "origin": "RapyVet POS | Captura rápida",
+        "origin": "RapyVet Pedidos | Captura rápida",
     }
 
     if nota.strip():
@@ -2218,7 +2218,7 @@ def render_encabezado() -> None:
                 <div class="rv-brand">
                     <div class="rv-brand-icon">🐾</div>
                     <div>
-                        <p class="rv-brand-title">RapyVet POS</p>
+                        <p class="rv-brand-title">RapyVet Pedidos</p>
                         <p class="rv-brand-copy">Pedidos rápidos</p>
                     </div>
                 </div>
@@ -2238,7 +2238,7 @@ def render_encabezado() -> None:
             <div class="rv-brand">
                 <div class="rv-brand-icon">🐾</div>
                 <div>
-                    <p class="rv-brand-title">RapyVet POS</p>
+                    <p class="rv-brand-title">RapyVet Pedidos</p>
                     <p class="rv-brand-copy">Captura rápida conectada con Odoo</p>
                 </div>
             </div>
