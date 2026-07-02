@@ -59,6 +59,8 @@ def inicializar_estado() -> None:
         "cantidad_gratis": 1,
         "precio_promocion": 0.0,
         "nota_pedido": "",
+        "limpiar_selector_producto": False,
+        "notificacion_temporal": None,
     }
 
     for clave, valor in valores.items():
@@ -67,6 +69,32 @@ def inicializar_estado() -> None:
 
 
 inicializar_estado()
+
+
+def procesar_acciones_pendientes() -> None:
+    """Limpia el formulario después de agregar y muestra una notificación."""
+
+    if st.session_state.get("limpiar_selector_producto", False):
+        st.session_state.producto_id = None
+        st.session_state.ultimo_producto_id = None
+        st.session_state.cantidad_normal = 1
+        st.session_state.precio_normal = 0.0
+        st.session_state.preset_promocion = "1+1"
+        st.session_state.cantidad_cobrada = 1
+        st.session_state.cantidad_gratis = 1
+        st.session_state.precio_promocion = 0.0
+        st.session_state.limpiar_selector_producto = False
+
+    notificacion = st.session_state.get("notificacion_temporal")
+    if notificacion:
+        st.toast(
+            str(notificacion.get("mensaje") or "Producto agregado"),
+            icon=str(notificacion.get("icono") or "✅"),
+        )
+        st.session_state.notificacion_temporal = None
+
+
+procesar_acciones_pendientes()
 
 
 # =============================================================================
@@ -458,6 +486,119 @@ def aplicar_estilos() -> None:
                 font-weight: 850;
             }}
 
+            .rv-cart-total-chip {{
+                padding: .38rem .68rem;
+                border: 1px solid var(--rv-border);
+                border-radius: 999px;
+                background: var(--rv-surface-2);
+                color: var(--rv-text) !important;
+                font-size: .75rem;
+                font-weight: 900;
+                white-space: nowrap;
+            }}
+
+            .rv-compact-item {{
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                align-items: center;
+                gap: .8rem;
+                min-width: 0;
+                padding: .1rem 0 .3rem 0;
+            }}
+
+            .rv-compact-main {{
+                min-width: 0;
+            }}
+
+            .rv-compact-top {{
+                display: flex;
+                align-items: center;
+                gap: .45rem;
+                min-width: 0;
+            }}
+
+            .rv-item-number {{
+                display: inline-grid;
+                flex: 0 0 auto;
+                width: 1.65rem;
+                height: 1.65rem;
+                place-items: center;
+                border-radius: .55rem;
+                background: var(--rv-primary-soft);
+                color: var(--rv-primary) !important;
+                font-size: .7rem;
+                font-weight: 950;
+            }}
+
+            .rv-compact-name {{
+                overflow: hidden;
+                margin: 0;
+                color: var(--rv-text) !important;
+                font-size: .95rem;
+                font-weight: 900;
+                line-height: 1.25;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }}
+
+            .rv-compact-detail {{
+                margin: .3rem 0 0 2.1rem;
+                color: var(--rv-muted) !important;
+                font-size: .75rem;
+                line-height: 1.35;
+            }}
+
+            .rv-compact-total {{
+                min-width: 5.8rem;
+                text-align: right;
+            }}
+
+            .rv-compact-total-label {{
+                margin: 0;
+                color: var(--rv-muted) !important;
+                font-size: .64rem;
+                font-weight: 800;
+                letter-spacing: .04em;
+                text-transform: uppercase;
+            }}
+
+            .rv-compact-total-value {{
+                margin: .12rem 0 0 0;
+                color: var(--rv-primary) !important;
+                font-size: 1rem;
+                font-weight: 950;
+            }}
+
+            .rv-inline-badge {{
+                display: inline-flex;
+                align-items: center;
+                flex: 0 0 auto;
+                padding: .22rem .44rem;
+                border-radius: 999px;
+                background: var(--rv-primary-soft);
+                color: var(--rv-primary) !important;
+                font-size: .61rem;
+                font-weight: 900;
+                letter-spacing: .035em;
+                text-transform: uppercase;
+            }}
+
+            .rv-inline-badge-free {{
+                background: color-mix(in srgb, var(--rv-free) 13%, transparent);
+                color: var(--rv-free) !important;
+            }}
+
+            .rv-inline-badge-promo {{
+                background: linear-gradient(135deg, var(--rv-primary), var(--rv-blue));
+                color: white !important;
+            }}
+
+            .rv-edit-note {{
+                margin: .2rem 0 .65rem 0;
+                color: var(--rv-muted) !important;
+                font-size: .75rem;
+            }}
+
             .rv-empty {{
                 padding: 2.25rem 1rem;
                 border: 1px dashed var(--rv-border);
@@ -845,6 +986,34 @@ def aplicar_estilos() -> None:
 
                 div[data-testid="stButton"] > button {{
                     min-height: 3rem;
+                }}
+            }}
+
+            @media (max-width: 520px) {{
+                .rv-compact-item {{
+                    grid-template-columns: minmax(0, 1fr) auto;
+                    gap: .5rem;
+                }}
+
+                .rv-compact-name {{
+                    font-size: .88rem;
+                }}
+
+                .rv-compact-detail {{
+                    margin-left: 0;
+                    font-size: .7rem;
+                }}
+
+                .rv-item-number {{
+                    display: none;
+                }}
+
+                .rv-compact-total {{
+                    min-width: 4.8rem;
+                }}
+
+                .rv-compact-total-value {{
+                    font-size: .9rem;
                 }}
             }}
 
@@ -1335,6 +1504,8 @@ def reiniciar_pedido() -> None:
         "nota_pedido",
         "resultado_pedido",
         "mostrar_balloons",
+        "limpiar_selector_producto",
+        "notificacion_temporal",
     )
 
     for clave in claves:
@@ -1399,6 +1570,29 @@ def validar_carrito(carrito: list[dict[str, Any]]) -> list[str]:
             errores.append("Una línea de promoción gratis no tiene precio $0.00.")
 
     return errores
+
+
+def sincronizar_carrito_desde_widgets() -> None:
+    """Sincroniza cantidades y precios antes de calcular totales o resúmenes."""
+
+    for linea in st.session_state.carrito:
+        linea_id = str(linea["linea_id"])
+        clave_cantidad = f"cantidad_{linea_id}"
+        clave_precio = f"precio_{linea_id}"
+
+        if clave_cantidad in st.session_state:
+            linea["cantidad"] = max(
+                1,
+                int(st.session_state[clave_cantidad]),
+            )
+
+        if linea.get("parte_promocion") == "gratis":
+            linea["precio_unitario"] = 0.0
+        elif clave_precio in st.session_state:
+            linea["precio_unitario"] = max(
+                0.0,
+                float(st.session_state[clave_precio]),
+            )
 
 
 def elementos_visuales_carrito() -> list[tuple[str, list[dict[str, Any]]]]:
@@ -1808,7 +2002,14 @@ with col_producto:
                         cantidad=int(cantidad_normal),
                         precio_unitario=float(precio_normal),
                     )
-                    st.toast("Producto agregado", icon="✅")
+                    st.session_state.limpiar_selector_producto = True
+                    st.session_state.notificacion_temporal = {
+                        "mensaje": (
+                            f"{producto_seleccionado.get('name', 'Producto')} "
+                            "agregado al carrito"
+                        ),
+                        "icono": "✅",
+                    }
                     st.rerun()
 
         with tab_promocion:
@@ -1889,37 +2090,58 @@ with col_producto:
                         cantidad_gratis=int(cantidad_gratis),
                         precio_unitario=float(precio_promocion),
                     )
-                    st.toast(
-                        f"Promoción {combinacion} agregada en dos líneas",
-                        icon="🎁",
-                    )
+                    st.session_state.limpiar_selector_producto = True
+                    st.session_state.notificacion_temporal = {
+                        "mensaje": (
+                            f"Promoción {combinacion} de "
+                            f"{producto_seleccionado.get('name', 'producto')} agregada"
+                        ),
+                        "icono": "🎁",
+                    }
                     st.rerun()
 
 
 # =============================================================================
-# CARRITO VISUAL
+# CARRITO VISUAL COMPACTO
 # =============================================================================
 
 
-cabecera_col, vaciar_col = st.columns([5, 1])
+sincronizar_carrito_desde_widgets()
+elementos_carrito = elementos_visuales_carrito()
+total_actual_carrito = sum(
+    int(linea["cantidad"]) * float(linea["precio_unitario"])
+    for linea in st.session_state.carrito
+)
+
+cabecera_col, total_col, vaciar_col = st.columns([4.6, 1.3, 1.25])
 
 with cabecera_col:
     st.markdown(
         f"""
         <div class="rv-cart-heading">
-            <h2 style="margin:0;font-size:1.35rem;">🛒 Carrito</h2>
-            <span class="rv-cart-count">{len(st.session_state.carrito)} líneas</span>
+            <h2 style="margin:0;font-size:1.35rem;">🛒 Productos agregados</h2>
+            <span class="rv-cart-count">
+                {len(elementos_carrito)} productos · {len(st.session_state.carrito)} líneas
+            </span>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+with total_col:
+    st.markdown(
+        f'<div style="margin-top:1.15rem;" class="rv-cart-total-chip">'
+        f'Total {moneda(total_actual_carrito)}</div>',
+        unsafe_allow_html=True,
+    )
+
 with vaciar_col:
     st.button(
-        "Vaciar carrito",
+        "Vaciar",
         use_container_width=True,
         disabled=not bool(st.session_state.carrito),
         on_click=vaciar_carrito,
+        help="Eliminar todos los productos del carrito.",
     )
 
 
@@ -1928,18 +2150,20 @@ if not st.session_state.carrito:
         """
         <div class="rv-empty">
             <div class="rv-empty-icon">🛒</div>
-            <div class="rv-empty-title">Tu pedido todavía está vacío</div>
+            <div class="rv-empty-title">Aún no hay productos</div>
             <div class="rv-empty-copy">
-                Selecciona un producto y agrégalo como venta normal o promoción.
-                Las promociones se verán como una tarjeta, pero se enviarán a
-                Odoo como dos líneas: cobrada y gratis.
+                Elige un producto y agrégalo. Después de agregarlo, el selector
+                se limpiará automáticamente para evitar capturas duplicadas.
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 else:
-    for tipo_elemento, lineas in elementos_visuales_carrito():
+    for numero_item, (tipo_elemento, lineas) in enumerate(
+        elementos_carrito,
+        start=1,
+    ):
         if tipo_elemento == "linea":
             linea = lineas[0]
             linea_id = str(linea["linea_id"])
@@ -1952,90 +2176,106 @@ else:
                 float(linea["precio_unitario"]),
             )
 
-            with st.container(border=True):
-                precio_actual = float(st.session_state[clave_precio])
-                es_gratis = precio_actual == 0.0
-                badge = "Gratis" if es_gratis else "Venta"
-                clase = "rv-badge rv-badge-free" if es_gratis else "rv-badge"
+            cantidad_actual = int(st.session_state[clave_cantidad])
+            precio_actual = float(st.session_state[clave_precio])
+            subtotal_actual = cantidad_actual * precio_actual
+            es_gratis = precio_actual == 0.0
+            badge = "Gratis" if es_gratis else "Venta"
+            clase_badge = (
+                "rv-inline-badge rv-inline-badge-free"
+                if es_gratis
+                else "rv-inline-badge"
+            )
 
+            # Sincroniza el modelo antes de calcular el resumen general.
+            linea["cantidad"] = cantidad_actual
+            linea["precio_unitario"] = precio_actual
+            linea["tipo"] = "gratis" if es_gratis else "venta"
+
+            with st.container(border=True):
                 st.markdown(
                     f"""
-                    <div class="rv-line-head">
-                        <div>
-                            <p class="rv-line-title">
-                                {texto_seguro(linea['nombre_producto'])}
-                            </p>
-                            <p class="rv-line-meta">
-                                {texto_seguro(linea['codigo'])} · Lista
-                                {moneda(float(linea['precio_lista']))}
+                    <div class="rv-compact-item">
+                        <div class="rv-compact-main">
+                            <div class="rv-compact-top">
+                                <span class="rv-item-number">{numero_item}</span>
+                                <p class="rv-compact-name">
+                                    {texto_seguro(linea['nombre_producto'])}
+                                </p>
+                                <span class="{clase_badge}">{badge}</span>
+                            </div>
+                            <p class="rv-compact-detail">
+                                {cantidad_actual} × {moneda(precio_actual)} ·
+                                Código {texto_seguro(linea['codigo'])}
                             </p>
                         </div>
-                        <span class="{clase}">{badge}</span>
+                        <div class="rv-compact-total">
+                            <p class="rv-compact-total-label">Subtotal</p>
+                            <p class="rv-compact-total-value">
+                                {moneda(subtotal_actual)}
+                            </p>
+                        </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-                edit_col1, edit_col2 = st.columns(2)
-
-                with edit_col1:
-                    cantidad = st.number_input(
-                        "Cantidad",
-                        min_value=1,
-                        step=1,
-                        key=clave_cantidad,
+                with st.expander("Editar producto", expanded=False):
+                    st.markdown(
+                        '<p class="rv-edit-note">'
+                        'Modifica solo cuando sea necesario.'
+                        '</p>',
+                        unsafe_allow_html=True,
                     )
 
-                with edit_col2:
-                    precio = st.number_input(
-                        "Precio unitario",
-                        min_value=0.0,
-                        step=0.01,
-                        format="%.2f",
-                        key=clave_precio,
+                    edit_col1, edit_col2 = st.columns(2)
+                    with edit_col1:
+                        cantidad = st.number_input(
+                            "Cantidad",
+                            min_value=1,
+                            step=1,
+                            key=clave_cantidad,
+                        )
+                    with edit_col2:
+                        precio = st.number_input(
+                            "Precio unitario",
+                            min_value=0.0,
+                            step=0.01,
+                            format="%.2f",
+                            key=clave_precio,
+                        )
+
+                    linea["cantidad"] = int(cantidad)
+                    linea["precio_unitario"] = float(precio)
+                    linea["tipo"] = (
+                        "gratis" if float(precio) == 0.0 else "venta"
                     )
 
-                linea["cantidad"] = int(cantidad)
-                linea["precio_unitario"] = float(precio)
-                linea["tipo"] = "gratis" if float(precio) == 0.0 else "venta"
-
-                subtotal = int(cantidad) * float(precio)
-
-                st.markdown(
-                    f"""
-                    <div class="rv-subtotal">
-                        <span class="rv-subtotal-label">Subtotal</span>
-                        <span class="rv-subtotal-value">{moneda(subtotal)}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                a1, a2, a3 = st.columns(3)
-                with a1:
-                    st.button(
-                        "Duplicar",
-                        key=f"duplicar_{linea_id}",
-                        use_container_width=True,
-                        on_click=duplicar_linea,
-                        args=(linea_id,),
-                    )
-                with a2:
-                    st.button(
-                        "Hacer gratis",
-                        key=f"gratis_{linea_id}",
-                        use_container_width=True,
-                        on_click=hacer_linea_gratis,
-                        args=(linea_id,),
-                    )
-                with a3:
-                    st.button(
-                        "Eliminar",
-                        key=f"eliminar_{linea_id}",
-                        use_container_width=True,
-                        on_click=eliminar_linea,
-                        args=(linea_id,),
-                    )
+                    a1, a2, a3 = st.columns(3)
+                    with a1:
+                        st.button(
+                            "Duplicar",
+                            key=f"duplicar_{linea_id}",
+                            use_container_width=True,
+                            on_click=duplicar_linea,
+                            args=(linea_id,),
+                        )
+                    with a2:
+                        st.button(
+                            "Hacer gratis",
+                            key=f"gratis_{linea_id}",
+                            use_container_width=True,
+                            on_click=hacer_linea_gratis,
+                            args=(linea_id,),
+                        )
+                    with a3:
+                        st.button(
+                            "Eliminar",
+                            key=f"eliminar_{linea_id}",
+                            use_container_width=True,
+                            on_click=eliminar_linea,
+                            args=(linea_id,),
+                        )
 
         else:
             if len(lineas) != 2:
@@ -2079,122 +2319,115 @@ else:
                 int(gratis["cantidad"]),
             )
 
-            cantidad_cobrada_actual = int(st.session_state[key_cantidad_cobrada])
-            cantidad_gratis_actual = int(st.session_state[key_cantidad_gratis])
+            cantidad_cobrada_actual = int(
+                st.session_state[key_cantidad_cobrada]
+            )
+            cantidad_gratis_actual = int(
+                st.session_state[key_cantidad_gratis]
+            )
+            precio_cobrado_actual = float(
+                st.session_state[key_precio_cobrada]
+            )
             combinacion_actual = (
                 f"{cantidad_cobrada_actual}+{cantidad_gratis_actual}"
             )
+            subtotal_promocion_actual = (
+                cantidad_cobrada_actual * precio_cobrado_actual
+            )
+
+            cobrada["cantidad"] = cantidad_cobrada_actual
+            cobrada["precio_unitario"] = precio_cobrado_actual
+            gratis["cantidad"] = cantidad_gratis_actual
+            gratis["precio_unitario"] = 0.0
 
             with st.container(border=True):
                 st.markdown(
                     f"""
-                    <div class="rv-promotion-head">
-                        <div>
-                            <p class="rv-promotion-kicker">Promoción · dos líneas</p>
-                            <p class="rv-promotion-title">
-                                {texto_seguro(cobrada['nombre_producto'])}
-                            </p>
-                            <p class="rv-promotion-code">
-                                {texto_seguro(cobrada['codigo'])} · Lista
-                                {moneda(float(cobrada['precio_lista']))}
+                    <div class="rv-compact-item">
+                        <div class="rv-compact-main">
+                            <div class="rv-compact-top">
+                                <span class="rv-item-number">{numero_item}</span>
+                                <p class="rv-compact-name">
+                                    {texto_seguro(cobrada['nombre_producto'])}
+                                </p>
+                                <span class="rv-inline-badge rv-inline-badge-promo">
+                                    {combinacion_actual}
+                                </span>
+                            </div>
+                            <p class="rv-compact-detail">
+                                {cantidad_cobrada_actual} cobradas ×
+                                {moneda(precio_cobrado_actual)} ·
+                                {cantidad_gratis_actual} gratis
                             </p>
                         </div>
-                        <span class="rv-promotion-badge">
-                            {combinacion_actual}
-                        </span>
+                        <div class="rv-compact-total">
+                            <p class="rv-compact-total-label">Subtotal</p>
+                            <p class="rv-compact-total-value">
+                                {moneda(subtotal_promocion_actual)}
+                            </p>
+                        </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-                promo_izq, promo_der = st.columns(2)
-
-                with promo_izq:
+                with st.expander(
+                    f"Editar promoción {combinacion_actual}",
+                    expanded=False,
+                ):
                     st.markdown(
-                        '<div class="rv-subline-label">Línea cobrada</div>',
-                        unsafe_allow_html=True,
-                    )
-                    cantidad_cobrada_editada = st.number_input(
-                        "Unidades cobradas",
-                        min_value=1,
-                        step=1,
-                        key=key_cantidad_cobrada,
-                    )
-                    precio_cobrado_editado = st.number_input(
-                        "Precio unitario cobrado",
-                        min_value=0.0,
-                        step=0.01,
-                        format="%.2f",
-                        key=key_precio_cobrada,
-                    )
-                    subtotal_cobrado = (
-                        int(cantidad_cobrada_editada)
-                        * float(precio_cobrado_editado)
-                    )
-                    st.markdown(
-                        f"""
-                        <div class="rv-subtotal">
-                            <span class="rv-subtotal-label">Subtotal</span>
-                            <span class="rv-subtotal-value">
-                                {moneda(subtotal_cobrado)}
-                            </span>
-                        </div>
-                        """,
+                        '<p class="rv-edit-note">'
+                        'Odoo recibirá dos líneas: una cobrada y otra a $0.00.'
+                        '</p>',
                         unsafe_allow_html=True,
                     )
 
-                with promo_der:
-                    st.markdown(
-                        '<div class="rv-subline-label">Línea gratis</div>',
-                        unsafe_allow_html=True,
-                    )
-                    cantidad_gratis_editada = st.number_input(
-                        "Unidades gratis",
-                        min_value=1,
-                        step=1,
-                        key=key_cantidad_gratis,
-                    )
-                    st.number_input(
-                        "Precio unitario gratis",
-                        min_value=0.0,
-                        value=0.0,
-                        format="%.2f",
-                        disabled=True,
-                        key=f"precio_gratis_visual_{id_gratis}",
-                    )
-                    st.markdown(
-                        """
-                        <div class="rv-subtotal">
-                            <span class="rv-subtotal-label">Subtotal</span>
-                            <span class="rv-subtotal-value">$0.00</span>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                    promo_col1, promo_col2, promo_col3 = st.columns(3)
+                    with promo_col1:
+                        cantidad_cobrada_editada = st.number_input(
+                            "Unidades cobradas",
+                            min_value=1,
+                            step=1,
+                            key=key_cantidad_cobrada,
+                        )
+                    with promo_col2:
+                        precio_cobrado_editado = st.number_input(
+                            "Precio cobrado",
+                            min_value=0.0,
+                            step=0.01,
+                            format="%.2f",
+                            key=key_precio_cobrada,
+                        )
+                    with promo_col3:
+                        cantidad_gratis_editada = st.number_input(
+                            "Unidades gratis",
+                            min_value=1,
+                            step=1,
+                            key=key_cantidad_gratis,
+                        )
 
-                cobrada["cantidad"] = int(cantidad_cobrada_editada)
-                cobrada["precio_unitario"] = float(precio_cobrado_editado)
+                    cobrada["cantidad"] = int(cantidad_cobrada_editada)
+                    cobrada["precio_unitario"] = float(precio_cobrado_editado)
+                    gratis["cantidad"] = int(cantidad_gratis_editada)
+                    gratis["precio_unitario"] = 0.0
 
-                gratis["cantidad"] = int(cantidad_gratis_editada)
-                gratis["precio_unitario"] = 0.0
-
-                ac1, ac2 = st.columns(2)
-                with ac1:
-                    st.button(
-                        "Duplicar promoción",
-                        key=f"duplicar_grupo_{grupo_id}",
-                        use_container_width=True,
-                        on_click=duplicar_promocion,
-                        args=(grupo_id,),
-                    )
-                with ac2:
-                    st.button(
-                        "Eliminar promoción",
-                        key=f"eliminar_grupo_{grupo_id}",
-                        use_container_width=True,
-                        on_click=eliminar_promocion,
-                        args=(grupo_id,),
-                    )
+                    ac1, ac2 = st.columns(2)
+                    with ac1:
+                        st.button(
+                            "Duplicar promoción",
+                            key=f"duplicar_grupo_{grupo_id}",
+                            use_container_width=True,
+                            on_click=duplicar_promocion,
+                            args=(grupo_id,),
+                        )
+                    with ac2:
+                        st.button(
+                            "Eliminar promoción",
+                            key=f"eliminar_grupo_{grupo_id}",
+                            use_container_width=True,
+                            on_click=eliminar_promocion,
+                            args=(grupo_id,),
+                        )
 
 
 # =============================================================================
