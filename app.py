@@ -2,65 +2,69 @@ from __future__ import annotations
 
 import html
 import os
+import unicodedata
 import uuid
 import xmlrpc.client
 from typing import Any
 from urllib.parse import quote
 
 import streamlit as st
+from st_keyup import st_keyup
+from streamlit_js_eval import streamlit_js_eval
 
 
 # =============================================================================
-# CONFIGURACIÓN GENERAL
+# CONFIGURACIÓN
 # =============================================================================
 
 st.set_page_config(
-    page_title="RapyVet | Pedidos",
+    page_title="RapyVet POS | Pedidos",
     page_icon="🐾",
     layout="wide",
     initial_sidebar_state="collapsed",
-    menu_items={
-        "About": "RapyVet · Captura móvil de pedidos conectada con Odoo",
-    },
+    menu_items={"About": "RapyVet · Interfaz móvil y escritorio conectada con Odoo"},
 )
 
-# False: crea una cotización en borrador.
-# True: crea la cotización y la confirma automáticamente.
 CONFIRMAR_AUTOMATICAMENTE = False
-
-PROMOCIONES_RAPIDAS = (
-    "Personalizada",
-    "1+1",
-    "2+1",
-    "2+2",
-    "4+1",
-    "10+2",
-    "11+1",
-)
+PRODUCTOS_POR_PAGINA = 6
+COLUMNAS_CATALOGO = 3
+PROMOCIONES_RAPIDAS = ("1+1", "2+1", "2+2", "4+1", "10+2", "11+1", "Otra")
 
 
 # =============================================================================
-# ESTADO DE STREAMLIT
+# ESTADO
 # =============================================================================
 
 
 def inicializar_estado() -> None:
-    valores = {
+    valores: dict[str, Any] = {
         "carrito": [],
+        "cliente_id": None,
         "resultado_pedido": None,
         "mostrar_balloons": False,
-        "cliente_id": None,
-        "producto_id": None,
-        "ultimo_producto_id": None,
-        "cantidad_normal": 1,
-        "precio_normal": 0.0,
-        "preset_promocion": "1+1",
-        "cantidad_cobrada": 1,
-        "cantidad_gratis": 1,
-        "precio_promocion": 0.0,
+        "producto_promocion_id": None,
+        "productos_recientes": [],
+        "busqueda_pos": "",
+        "busqueda_widget_version": 0,
+        "categoria_pos": "Todas",
+        "vista_pos": "Todos",
+        "pagina_catalogo": 0,
+        "notificacion_pendiente": None,
         "nota_pedido": "",
-        "limpiar_selector_producto": False,
-        "notificacion_temporal": None,
+        "desktop_nota_pedido": "",
+        "mobile_nota_pedido": "",
+        "mobile_tab": "Productos",
+        "enviar_pedido": False,
+        # Estado exclusivo de la interfaz de escritorio clásica.
+        "desktop_producto_id": None,
+        "desktop_ultimo_producto_id": None,
+        "desktop_cantidad_normal": 1,
+        "desktop_precio_normal": 0.0,
+        "desktop_preset_promocion": "1+1",
+        "desktop_cantidad_cobrada": 1,
+        "desktop_cantidad_gratis": 1,
+        "desktop_precio_promocion": 0.0,
+        "desktop_limpiar_producto": False,
     }
 
     for clave, valor in valores.items():
@@ -70,981 +74,884 @@ def inicializar_estado() -> None:
 
 inicializar_estado()
 
+# Limpia el formulario de escritorio en el siguiente rerun. Streamlit no
+# permite cambiar la clave de un widget después de haberlo creado en la misma
+# ejecución, por eso se procesa aquí, antes de renderizar el selector.
+if st.session_state.get("desktop_limpiar_producto", False):
+    st.session_state.desktop_producto_id = None
+    st.session_state.desktop_ultimo_producto_id = None
+    st.session_state.desktop_cantidad_normal = 1
+    st.session_state.desktop_precio_normal = 0.0
+    st.session_state.desktop_preset_promocion = "1+1"
+    st.session_state.desktop_cantidad_cobrada = 1
+    st.session_state.desktop_cantidad_gratis = 1
+    st.session_state.desktop_precio_promocion = 0.0
+    st.session_state.desktop_limpiar_producto = False
 
-def procesar_acciones_pendientes() -> None:
-    """Limpia el formulario después de agregar y muestra una notificación."""
-
-    if st.session_state.get("limpiar_selector_producto", False):
-        st.session_state.producto_id = None
-        st.session_state.ultimo_producto_id = None
-        st.session_state.cantidad_normal = 1
-        st.session_state.precio_normal = 0.0
-        st.session_state.preset_promocion = "1+1"
-        st.session_state.cantidad_cobrada = 1
-        st.session_state.cantidad_gratis = 1
-        st.session_state.precio_promocion = 0.0
-        st.session_state.limpiar_selector_producto = False
-
-    notificacion = st.session_state.get("notificacion_temporal")
-    if notificacion:
-        st.toast(
-            str(notificacion.get("mensaje") or "Producto agregado"),
-            icon=str(notificacion.get("icono") or "✅"),
-        )
-        st.session_state.notificacion_temporal = None
-
-
-procesar_acciones_pendientes()
+if st.session_state.notificacion_pendiente:
+    aviso = st.session_state.notificacion_pendiente
+    st.toast(aviso["texto"], icon=aviso.get("icono", "✅"))
+    st.session_state.notificacion_pendiente = None
 
 
 # =============================================================================
-# TEMA AUTOMÁTICO Y CSS RESPONSIVO
+# ESTILOS — ESCRITORIO + EXPERIENCIA MÓVIL NATIVA
 # =============================================================================
 
-
-def obtener_tipo_tema() -> str:
-    """Detecta el tema activo de Streamlit con compatibilidad de respaldo."""
-
-    try:
-        tipo = str(st.context.theme.type).lower()
-        return "dark" if tipo == "dark" else "light"
-    except Exception:
-        return "light"
-
-
-def aplicar_estilos() -> None:
-    tema = obtener_tipo_tema()
-    oscuro = tema == "dark"
-
-    if oscuro:
-        colores = {
-            "fondo": "#08111F",
-            "fondo_2": "#0B1728",
-            "superficie": "#101E31",
-            "superficie_2": "#14253A",
-            "superficie_3": "#192C43",
-            "texto": "#F6FAFD",
-            "secundario": "#A7B7C9",
-            "borde": "#29415D",
-            "acento": "#35D0BA",
-            "acento_fuerte": "#0EA5A4",
-            "acento_suave": "rgba(53, 208, 186, .13)",
-            "azul": "#38BDF8",
-            "peligro": "#FB7185",
-            "gratis": "#F9A8D4",
-            "sombra": "rgba(0, 0, 0, .36)",
-            "hero_1": "#0F766E",
-            "hero_2": "#075985",
-        }
-    else:
-        colores = {
-            "fondo": "#F3F7FA",
-            "fondo_2": "#EAF4F4",
-            "superficie": "#FFFFFF",
-            "superficie_2": "#F7FAFC",
-            "superficie_3": "#EEF5F7",
-            "texto": "#102033",
-            "secundario": "#607184",
-            "borde": "#D9E4EC",
-            "acento": "#0F766E",
-            "acento_fuerte": "#0D9488",
-            "acento_suave": "rgba(15, 118, 110, .10)",
-            "azul": "#0369A1",
-            "peligro": "#BE123C",
-            "gratis": "#BE185D",
-            "sombra": "rgba(15, 23, 42, .09)",
-            "hero_1": "#0F766E",
-            "hero_2": "#0369A1",
+st.markdown(
+    """
+    <style>
+        :root {
+            --rv-bg: #f3f6f8;
+            --rv-surface: #ffffff;
+            --rv-surface-soft: #f7fafb;
+            --rv-text: #17212b;
+            --rv-muted: #667482;
+            --rv-border: #dce4e9;
+            --rv-primary: #0f766e;
+            --rv-primary-hover: #0a625c;
+            --rv-primary-soft: #e4f5f2;
+            --rv-promo-soft: #fff2d1;
+            --rv-promo-text: #7a5200;
+            --rv-danger: #b42318;
+            --rv-shadow: 0 12px 34px rgba(25, 42, 58, .08);
+            color-scheme: light;
         }
 
-    st.markdown(
-        f"""
-        <style>
-            :root {{
-                --rv-bg: {colores['fondo']};
-                --rv-bg-2: {colores['fondo_2']};
-                --rv-surface: {colores['superficie']};
-                --rv-surface-2: {colores['superficie_2']};
-                --rv-surface-3: {colores['superficie_3']};
-                --rv-text: {colores['texto']};
-                --rv-muted: {colores['secundario']};
-                --rv-border: {colores['borde']};
-                --rv-primary: {colores['acento']};
-                --rv-primary-strong: {colores['acento_fuerte']};
-                --rv-primary-soft: {colores['acento_suave']};
-                --rv-blue: {colores['azul']};
-                --rv-danger: {colores['peligro']};
-                --rv-free: {colores['gratis']};
-                --rv-shadow: {colores['sombra']};
-                color-scheme: {tema};
-            }}
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --rv-bg: #071018;
+                --rv-surface: #0d1822;
+                --rv-surface-soft: #14212c;
+                --rv-text: #f3f7fa;
+                --rv-muted: #9caab7;
+                --rv-border: #293a49;
+                --rv-primary: #45d5c3;
+                --rv-primary-hover: #69dfd1;
+                --rv-primary-soft: rgba(69, 213, 195, .14);
+                --rv-promo-soft: rgba(255, 190, 68, .14);
+                --rv-promo-text: #ffd27a;
+                --rv-danger: #ff918a;
+                --rv-shadow: 0 16px 42px rgba(0, 0, 0, .32);
+                color-scheme: dark;
+            }
+        }
 
-            html {{
-                scroll-behavior: smooth;
-                -webkit-text-size-adjust: 100%;
-            }}
+        html {
+            scroll-behavior: smooth;
+            -webkit-text-size-adjust: 100%;
+        }
 
-            body {{
-                overscroll-behavior-y: contain;
-            }}
+        [data-testid="stAppViewContainer"] {
+            background: var(--rv-bg);
+            color: var(--rv-text);
+        }
 
-            [data-testid="stAppViewContainer"] {{
-                background:
-                    radial-gradient(
-                        circle at 6% -2%,
-                        var(--rv-primary-soft),
-                        transparent 27rem
-                    ),
-                    linear-gradient(
-                        180deg,
-                        var(--rv-bg-2) 0,
-                        var(--rv-bg) 24rem,
-                        var(--rv-bg) 100%
-                    );
-                color: var(--rv-text);
-            }}
+        [data-testid="stHeader"] {
+            background: transparent;
+        }
 
-            [data-testid="stHeader"] {{
-                background: transparent;
-            }}
+        /*
+         * streamlit-js-eval se renderiza dentro de un iframe invisible.
+         * Algunas versiones de Streamlit reservan cerca de 150 px para ese
+         * componente aunque no muestre contenido. Colapsamos exclusivamente
+         * ese iframe sin afectar el buscador st_keyup ni otros componentes.
+         */
+        iframe[title*="streamlit_js_eval"],
+        iframe[src*="streamlit_js_eval"] {
+            display: block !important;
+            width: 1px !important;
+            height: 1px !important;
+            min-height: 1px !important;
+            max-height: 1px !important;
+            border: 0 !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
 
-            [data-testid="stAppViewBlockContainer"] {{
-                max-width: 1120px;
-                padding-top: 1rem;
-                padding-bottom: calc(5rem + env(safe-area-inset-bottom));
-            }}
+        div[data-testid="stCustomComponentV1"]:has(
+            iframe[title*="streamlit_js_eval"]
+        ),
+        div[data-testid="stCustomComponentV1"]:has(
+            iframe[src*="streamlit_js_eval"]
+        ),
+        div[data-testid="stElementContainer"]:has(
+            iframe[title*="streamlit_js_eval"]
+        ),
+        div[data-testid="stElementContainer"]:has(
+            iframe[src*="streamlit_js_eval"]
+        ) {
+            height: 1px !important;
+            min-height: 1px !important;
+            max-height: 1px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: hidden !important;
+        }
 
-            p, label, h1, h2, h3, h4, h5, h6,
-            [data-testid="stMarkdownContainer"] {{
-                color: var(--rv-text);
-            }}
+        [data-testid="stAppViewBlockContainer"] {
+            max-width: 1480px;
+            padding-top: .15rem;
+            padding-bottom: 3rem;
+        }
 
-            .rv-hero {{
+        p, label, h1, h2, h3, h4,
+        [data-testid="stMarkdownContainer"] {
+            color: var(--rv-text);
+        }
+
+        .rv-topbar,
+        .rv-mobile-appbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: .8rem;
+            margin-bottom: .65rem;
+            padding: .75rem .85rem;
+            border: 1px solid var(--rv-border);
+            border-radius: 1rem;
+            background: var(--rv-surface);
+            box-shadow: var(--rv-shadow);
+        }
+
+        .rv-brand {
+            display: flex;
+            align-items: center;
+            gap: .65rem;
+            min-width: 0;
+        }
+
+        .rv-brand-icon {
+            display: grid;
+            flex: 0 0 auto;
+            width: 2.45rem;
+            height: 2.45rem;
+            place-items: center;
+            border-radius: .82rem;
+            background: var(--rv-primary);
+            color: #fff;
+            font-size: 1.15rem;
+        }
+
+        .rv-brand-title {
+            margin: 0;
+            font-size: 1.04rem;
+            font-weight: 950;
+            letter-spacing: -.035em;
+        }
+
+        .rv-brand-copy {
+            margin: .05rem 0 0;
+            color: var(--rv-muted) !important;
+            font-size: .69rem;
+        }
+
+        .rv-top-stats,
+        .rv-mobile-status {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: .35rem;
+            flex-wrap: wrap;
+        }
+
+        .rv-pill {
+            padding: .32rem .54rem;
+            border: 1px solid var(--rv-border);
+            border-radius: 999px;
+            background: var(--rv-surface-soft);
+            font-size: .68rem;
+            font-weight: 850;
+            white-space: nowrap;
+        }
+
+        .rv-online-dot {
+            display: inline-block;
+            width: .48rem;
+            height: .48rem;
+            margin-right: .25rem;
+            border-radius: 999px;
+            background: #22c55e;
+            box-shadow: 0 0 0 3px rgba(34, 197, 94, .15);
+            vertical-align: .02rem;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border-color: var(--rv-border);
+            border-radius: 1rem;
+            background: var(--rv-surface);
+            box-shadow: 0 4px 16px rgba(20, 35, 50, .04);
+        }
+
+        .rv-section-title {
+            margin: 0;
+            font-size: 1rem;
+            font-weight: 950;
+            letter-spacing: -.025em;
+        }
+
+        .rv-section-copy {
+            margin: .12rem 0 .55rem;
+            color: var(--rv-muted) !important;
+            font-size: .73rem;
+            line-height: 1.4;
+        }
+
+        .rv-product-card {
+            min-height: 4.65rem;
+            padding: .55rem .62rem .24rem;
+            border-radius: .78rem;
+            background: linear-gradient(145deg, var(--rv-surface-soft), var(--rv-surface));
+        }
+
+        .rv-product-code {
+            margin: 0;
+            color: var(--rv-primary) !important;
+            font-size: .61rem;
+            font-weight: 950;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+        }
+
+        .rv-product-name {
+            display: -webkit-box;
+            overflow: hidden;
+            min-height: 1.9rem;
+            margin: .1rem 0 0;
+            font-size: .76rem;
+            font-weight: 900;
+            line-height: 1.22;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+        }
+
+        .rv-product-price {
+            margin: .2rem 0 0;
+            color: var(--rv-muted) !important;
+            font-size: .7rem;
+            font-weight: 850;
+        }
+
+        .rv-mobile-page-title {
+            margin: .1rem 0 .12rem;
+            font-size: 1.25rem;
+            font-weight: 950;
+            letter-spacing: -.04em;
+        }
+
+        .rv-mobile-page-copy {
+            margin: 0 0 .72rem;
+            color: var(--rv-muted) !important;
+            font-size: .78rem;
+            line-height: 1.45;
+        }
+
+        .rv-mobile-client-label,
+        .rv-mobile-filter-label {
+            margin: 0 0 .28rem;
+            color: var(--rv-muted) !important;
+            font-size: .66rem;
+            font-weight: 900;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+        }
+
+        .rv-mobile-product-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: .16rem .8rem;
+            align-items: center;
+            padding: .05rem .02rem .45rem;
+        }
+
+        .rv-mobile-product-row .rv-product-code {
+            grid-column: 1;
+            grid-row: 1;
+        }
+
+        .rv-mobile-product-row .rv-product-name {
+            grid-column: 1;
+            grid-row: 2;
+            min-height: 0;
+            margin-top: .08rem;
+            font-size: .86rem;
+            line-height: 1.28;
+            -webkit-line-clamp: 2;
+        }
+
+        .rv-mobile-product-row .rv-product-price {
+            grid-column: 2;
+            grid-row: 1 / span 2;
+            margin: 0;
+            color: var(--rv-primary) !important;
+            font-size: .9rem;
+            font-weight: 950;
+            white-space: nowrap;
+        }
+
+        .rv-results {
+            margin: .42rem 0 .35rem;
+            color: var(--rv-muted) !important;
+            font-size: .69rem;
+            font-weight: 780;
+        }
+
+        .rv-cart-line {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: .6rem;
+            align-items: center;
+        }
+
+        .rv-cart-name {
+            overflow: hidden;
+            margin: 0;
+            font-size: .84rem;
+            font-weight: 900;
+            line-height: 1.25;
+            text-overflow: ellipsis;
+        }
+
+        .rv-cart-detail {
+            margin: .12rem 0 0;
+            color: var(--rv-muted) !important;
+            font-size: .69rem;
+            line-height: 1.35;
+        }
+
+        .rv-cart-subtotal {
+            margin: 0;
+            font-size: .82rem;
+            font-weight: 950;
+            white-space: nowrap;
+        }
+
+        .rv-promo-chip,
+        .rv-free-chip {
+            display: inline-block;
+            margin-left: .28rem;
+            padding: .1rem .36rem;
+            border-radius: 999px;
+            font-size: .58rem;
+            font-weight: 950;
+            vertical-align: .08rem;
+        }
+
+        .rv-promo-chip {
+            background: var(--rv-promo-soft);
+            color: var(--rv-promo-text) !important;
+        }
+
+        .rv-free-chip {
+            background: var(--rv-primary-soft);
+            color: var(--rv-primary) !important;
+        }
+
+        .rv-qty-display {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 2.75rem;
+            border: 1px solid var(--rv-border);
+            border-radius: .78rem;
+            background: var(--rv-surface-soft);
+            font-size: .9rem;
+            font-weight: 950;
+        }
+
+        .rv-total-box {
+            margin-top: .65rem;
+            padding: .8rem .88rem;
+            border-radius: .95rem;
+            background: var(--rv-primary-soft);
+        }
+
+        .rv-total-label {
+            margin: 0;
+            color: var(--rv-muted) !important;
+            font-size: .65rem;
+            font-weight: 900;
+            letter-spacing: .055em;
+            text-transform: uppercase;
+        }
+
+        .rv-total-value {
+            margin: .08rem 0 0;
+            font-size: 1.45rem;
+            font-weight: 950;
+            letter-spacing: -.04em;
+        }
+
+        .rv-empty {
+            padding: 1.7rem .8rem;
+            text-align: center;
+        }
+
+        .rv-empty-icon { font-size: 1.75rem; }
+        .rv-empty-title { margin-top: .28rem; font-size: .87rem; font-weight: 900; }
+        .rv-empty-copy {
+            max-width: 21rem;
+            margin: .14rem auto 0;
+            color: var(--rv-muted) !important;
+            font-size: .71rem;
+            line-height: 1.4;
+        }
+
+        .rv-page-status {
+            display: flex;
+            min-height: 2.5rem;
+            align-items: center;
+            justify-content: center;
+            color: var(--rv-muted);
+            font-size: .7rem;
+            font-weight: 850;
+            text-align: center;
+        }
+
+        .rv-loading {
+            max-width: 22rem;
+            margin: 25vh auto 0;
+            padding: 1rem;
+            color: var(--rv-muted);
+            text-align: center;
+        }
+
+        .rv-mobile-bottom-summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: .75rem;
+            padding: .1rem .18rem .28rem;
+        }
+
+        .rv-mobile-bottom-copy {
+            margin: 0;
+            color: var(--rv-muted) !important;
+            font-size: .68rem;
+            font-weight: 800;
+        }
+
+        .rv-mobile-bottom-total {
+            margin: 0;
+            font-size: .94rem;
+            font-weight: 950;
+            white-space: nowrap;
+        }
+
+        div[data-testid="stButton"] > button {
+            min-height: 2.65rem;
+            border-radius: .72rem;
+            font-weight: 850;
+        }
+
+        button[kind="primary"] {
+            background: var(--rv-primary);
+            border-color: var(--rv-primary);
+        }
+
+        button[kind="primary"]:hover {
+            background: var(--rv-primary-hover);
+            border-color: var(--rv-primary-hover);
+        }
+
+        .rv-desktop-cart-wrap {
+            position: sticky;
+            top: .55rem;
+        }
+
+        /* El key de st.container crea la clase st-key-... de forma estable. */
+        .st-key-rv_mobile_search_area {
+            position: sticky;
+            top: 0;
+            z-index: 80;
+            margin: 0 -.12rem .55rem;
+            padding: .55rem .12rem .45rem;
+            background: color-mix(in srgb, var(--rv-bg) 94%, transparent);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+        }
+
+        .st-key-rv_mobile_bottom_bar {
+            padding: .42rem .5rem calc(.38rem + env(safe-area-inset-bottom));
+            border: 1px solid var(--rv-border);
+            border-radius: 1.2rem 1.2rem .9rem .9rem;
+            background: color-mix(in srgb, var(--rv-surface) 96%, transparent);
+            box-shadow: 0 -10px 34px rgba(0, 0, 0, .22);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+        }
+
+        .st-key-rv_mobile_bottom_bar [data-testid="stVerticalBlock"] {
+            gap: .34rem;
+        }
+
+        .st-key-rv_mobile_bottom_bar div[data-testid="stButton"] > button {
+            min-height: 3.12rem;
+            border-radius: .88rem;
+            font-size: .8rem;
+            font-weight: 950;
+        }
+
+        .st-key-rv_mobile_client_card {
+            margin-bottom: .65rem;
+        }
+
+        .st-key-rv_mobile_client_card > div {
+            padding: .74rem !important;
+        }
+
+        [class*="st-key-rv_mobile_product_card_"] > div,
+        .st-key-rv_mobile_cart_card > div {
+            padding: .68rem !important;
+        }
+
+        @media (max-width: 820px) {
+            [data-testid="stAppViewBlockContainer"] {
+                max-width: 100%;
+                padding: .12rem .62rem 9.4rem;
+            }
+
+            [data-testid="stToolbar"] { display: none !important; }
+            [data-testid="stHeader"] { height: 0 !important; }
+
+            .rv-mobile-appbar {
+                margin-bottom: .55rem;
+                padding: .62rem .68rem;
+                border-radius: .92rem;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+            }
+
+            .rv-brand-icon {
+                width: 2.25rem;
+                height: 2.25rem;
+                border-radius: .72rem;
+            }
+
+            .rv-brand-title { font-size: .98rem; }
+            .rv-brand-copy { display: none; }
+            .rv-mobile-status .rv-pill { padding: .26rem .44rem; font-size: .62rem; }
+
+            div[data-testid="stVerticalBlockBorderWrapper"] {
+                border-radius: .92rem;
+            }
+
+            div[data-testid="stButton"] > button {
+                min-height: 2.95rem;
+                font-size: .81rem;
+            }
+
+            [data-testid="stDialog"] > div {
+                width: calc(100vw - .7rem) !important;
+                max-width: calc(100vw - .7rem) !important;
+                border-radius: 1rem !important;
+            }
+
+            input, textarea, [data-baseweb="select"] {
+                font-size: 16px !important;
+            }
+
+            .rv-total-value { font-size: 1.58rem; }
+        }
+
+
+        /* ================================================================
+           INTERFAZ EXCLUSIVA DE ESCRITORIO
+           Se renderiza solo cuando el navegador mide más de 820 px.
+           ================================================================ */
+        @media (min-width: 821px) {
+            .rv-classic-hero {
                 position: relative;
                 overflow: hidden;
-                margin-bottom: .9rem;
-                padding: clamp(1.15rem, 3vw, 1.85rem);
-                border: 1px solid rgba(255, 255, 255, .16);
-                border-radius: 1.65rem;
-                background:
-                    linear-gradient(
-                        128deg,
-                        {colores['hero_1']} 0%,
-                        {colores['hero_2']} 100%
-                    );
-                box-shadow: 0 1.3rem 3rem var(--rv-shadow);
-                isolation: isolate;
-            }}
+                margin-bottom: .85rem;
+                padding: 1.35rem 1.55rem;
+                border: 1px solid rgba(255,255,255,.14);
+                border-radius: 1.35rem;
+                background: linear-gradient(128deg, #0f766e 0%, #0369a1 100%);
+                box-shadow: var(--rv-shadow);
+            }
 
-            .rv-hero::before,
-            .rv-hero::after {{
+            .rv-classic-hero::after {
                 content: "";
                 position: absolute;
-                z-index: -1;
-                border-radius: 999px;
-                background: rgba(255, 255, 255, .10);
-            }}
-
-            .rv-hero::before {{
                 width: 18rem;
                 height: 18rem;
-                top: -10rem;
-                right: -3rem;
-            }}
+                top: -11rem;
+                right: -4rem;
+                border-radius: 999px;
+                background: rgba(255,255,255,.10);
+            }
 
-            .rv-hero::after {{
-                width: 10rem;
-                height: 10rem;
-                right: 10rem;
-                bottom: -7rem;
-            }}
-
-            .rv-hero-grid {{
+            .rv-classic-hero-grid {
+                position: relative;
+                z-index: 1;
                 display: flex;
-                align-items: flex-start;
+                align-items: center;
                 justify-content: space-between;
                 gap: 1rem;
-            }}
+            }
 
-            .rv-kicker {{
-                margin: 0 0 .3rem 0;
-                color: rgba(255,255,255,.78) !important;
-                font-size: .74rem;
-                font-weight: 800;
+            .rv-classic-kicker {
+                margin: 0 0 .2rem;
+                color: rgba(255,255,255,.76) !important;
+                font-size: .7rem;
+                font-weight: 900;
                 letter-spacing: .09em;
                 text-transform: uppercase;
-            }}
+            }
 
-            .rv-title {{
+            .rv-classic-title {
                 margin: 0;
-                color: white !important;
-                font-size: clamp(1.65rem, 5vw, 2.45rem);
-                font-weight: 900;
-                letter-spacing: -.055em;
+                color: #fff !important;
+                font-size: 2rem;
+                font-weight: 950;
+                letter-spacing: -.05em;
                 line-height: 1.05;
-            }}
+            }
 
-            .rv-subtitle {{
-                max-width: 44rem;
-                margin: .55rem 0 0 0;
+            .rv-classic-subtitle {
+                max-width: 48rem;
+                margin: .45rem 0 0;
                 color: rgba(255,255,255,.88) !important;
-                font-size: clamp(.9rem, 2.2vw, 1rem);
-                line-height: 1.55;
-            }}
+                font-size: .9rem;
+            }
 
-            .rv-auto-theme {{
-                flex: 0 0 auto;
-                display: inline-flex;
-                align-items: center;
-                gap: .38rem;
-                padding: .5rem .72rem;
-                border: 1px solid rgba(255,255,255,.2);
-                border-radius: 999px;
-                background: rgba(255,255,255,.12);
-                color: white !important;
-                font-size: .73rem;
-                font-weight: 800;
-                white-space: nowrap;
-                backdrop-filter: blur(.5rem);
-            }}
-
-            .rv-pills {{
+            .rv-classic-pills {
+                position: relative;
+                z-index: 1;
                 display: flex;
                 flex-wrap: wrap;
-                gap: .42rem;
-                margin-top: .95rem;
-            }}
+                gap: .38rem;
+                margin-top: .8rem;
+            }
 
-            .rv-pill {{
-                padding: .34rem .65rem;
+            .rv-classic-pill {
+                padding: .3rem .58rem;
                 border: 1px solid rgba(255,255,255,.18);
                 border-radius: 999px;
                 background: rgba(255,255,255,.11);
-                color: white !important;
-                font-size: .72rem;
-                font-weight: 750;
-            }}
+                color: #fff !important;
+                font-size: .68rem;
+                font-weight: 800;
+            }
 
-            .rv-status-strip {{
+            .rv-classic-status-grid {
                 display: grid;
                 grid-template-columns: repeat(3, minmax(0, 1fr));
                 gap: .65rem;
-                margin: .9rem 0;
-            }}
+                margin: .75rem 0;
+            }
 
-            .rv-status-item {{
+            .rv-classic-status-card {
                 min-width: 0;
-                padding: .75rem .85rem;
+                padding: .72rem .82rem;
                 border: 1px solid var(--rv-border);
-                border-radius: 1rem;
-                background: var(--rv-surface);
-                background: color-mix(in srgb, var(--rv-surface) 92%, transparent);
-                box-shadow: 0 .45rem 1.3rem var(--rv-shadow);
-            }}
-
-            .rv-status-label {{
-                margin: 0;
-                color: var(--rv-muted) !important;
-                font-size: .68rem;
-                font-weight: 800;
-                letter-spacing: .06em;
-                text-transform: uppercase;
-            }}
-
-            .rv-status-value {{
-                overflow: hidden;
-                margin: .15rem 0 0 0;
-                color: var(--rv-text) !important;
-                font-size: .9rem;
-                font-weight: 830;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }}
-
-            .rv-steps {{
-                display: grid;
-                grid-template-columns: repeat(3, 1fr);
-                gap: .5rem;
-                margin: .8rem 0 1rem 0;
-            }}
-
-            .rv-step {{
-                display: flex;
-                align-items: center;
-                gap: .55rem;
-                min-width: 0;
-                padding: .62rem .72rem;
-                border: 1px solid var(--rv-border);
-                border-radius: .9rem;
-                background: var(--rv-surface);
-                color: var(--rv-muted) !important;
-                font-size: .78rem;
-                font-weight: 760;
-            }}
-
-            .rv-step-number {{
-                display: inline-grid;
-                flex: 0 0 auto;
-                width: 1.55rem;
-                height: 1.55rem;
-                place-items: center;
-                border-radius: 999px;
-                background: var(--rv-surface-3);
-                color: var(--rv-muted) !important;
-                font-size: .72rem;
-                font-weight: 900;
-            }}
-
-            .rv-step-active {{
-                border-color: var(--rv-primary);
-                color: var(--rv-text) !important;
-                box-shadow: 0 0 0 .18rem var(--rv-primary-soft);
-            }}
-
-            .rv-step-active .rv-step-number,
-            .rv-step-done .rv-step-number {{
-                background: var(--rv-primary);
-                color: white !important;
-            }}
-
-            .rv-step-done {{
-                color: var(--rv-text) !important;
-            }}
-
-            .rv-section-title {{
-                display: flex;
-                align-items: center;
-                gap: .55rem;
-                margin: 0;
-                font-size: 1.03rem;
-                font-weight: 880;
-                letter-spacing: -.02em;
-            }}
-
-            .rv-section-copy {{
-                margin: .24rem 0 .85rem 0;
-                color: var(--rv-muted) !important;
-                font-size: .86rem;
-                line-height: 1.45;
-            }}
-
-            .rv-product-preview {{
-                margin: .75rem 0 .85rem 0;
-                padding: .82rem .9rem;
-                border: 1px solid var(--rv-border);
-                border-radius: 1rem;
-                background: var(--rv-surface-2);
-            }}
-
-            .rv-product-name {{
-                margin: 0;
-                font-size: .94rem;
-                font-weight: 850;
-                line-height: 1.3;
-            }}
-
-            .rv-product-meta {{
-                margin: .22rem 0 0 0;
-                color: var(--rv-muted) !important;
-                font-size: .78rem;
-            }}
-
-            .rv-promo-preview {{
-                margin-top: .75rem;
-                padding: .8rem .9rem;
-                border: 1px solid var(--rv-border);
-                border-left: .28rem solid var(--rv-primary);
                 border-radius: .95rem;
-                background: var(--rv-surface-2);
-            }}
+                background: var(--rv-surface);
+                box-shadow: 0 .35rem 1.1rem var(--rv-shadow);
+            }
 
-            .rv-promo-preview strong {{
-                color: var(--rv-primary) !important;
-            }}
-
-            .rv-promo-preview p {{
-                margin: .12rem 0;
-                color: var(--rv-muted) !important;
-                font-size: .79rem;
-                line-height: 1.45;
-            }}
-
-            .rv-cart-heading {{
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: .8rem;
-                margin: 1.1rem 0 .6rem 0;
-            }}
-
-            .rv-cart-count {{
-                padding: .33rem .62rem;
-                border-radius: 999px;
-                background: var(--rv-primary-soft);
-                color: var(--rv-primary) !important;
-                font-size: .73rem;
-                font-weight: 850;
-            }}
-
-            .rv-cart-total-chip {{
-                padding: .38rem .68rem;
-                border: 1px solid var(--rv-border);
-                border-radius: 999px;
-                background: var(--rv-surface-2);
-                color: var(--rv-text) !important;
-                font-size: .75rem;
-                font-weight: 900;
-                white-space: nowrap;
-            }}
-
-            .rv-compact-item {{
-                display: grid;
-                grid-template-columns: minmax(0, 1fr) auto;
-                align-items: center;
-                gap: .8rem;
-                min-width: 0;
-                padding: .1rem 0 .3rem 0;
-            }}
-
-            .rv-compact-main {{
-                min-width: 0;
-            }}
-
-            .rv-compact-top {{
-                display: flex;
-                align-items: center;
-                gap: .45rem;
-                min-width: 0;
-            }}
-
-            .rv-item-number {{
-                display: inline-grid;
-                flex: 0 0 auto;
-                width: 1.65rem;
-                height: 1.65rem;
-                place-items: center;
-                border-radius: .55rem;
-                background: var(--rv-primary-soft);
-                color: var(--rv-primary) !important;
-                font-size: .7rem;
-                font-weight: 950;
-            }}
-
-            .rv-compact-name {{
-                overflow: hidden;
-                margin: 0;
-                color: var(--rv-text) !important;
-                font-size: .95rem;
-                font-weight: 900;
-                line-height: 1.25;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }}
-
-            .rv-compact-detail {{
-                margin: .3rem 0 0 2.1rem;
-                color: var(--rv-muted) !important;
-                font-size: .75rem;
-                line-height: 1.35;
-            }}
-
-            .rv-compact-total {{
-                min-width: 5.8rem;
-                text-align: right;
-            }}
-
-            .rv-compact-total-label {{
+            .rv-classic-status-label {
                 margin: 0;
                 color: var(--rv-muted) !important;
                 font-size: .64rem;
-                font-weight: 800;
-                letter-spacing: .04em;
-                text-transform: uppercase;
-            }}
-
-            .rv-compact-total-value {{
-                margin: .12rem 0 0 0;
-                color: var(--rv-primary) !important;
-                font-size: 1rem;
-                font-weight: 950;
-            }}
-
-            .rv-inline-badge {{
-                display: inline-flex;
-                align-items: center;
-                flex: 0 0 auto;
-                padding: .22rem .44rem;
-                border-radius: 999px;
-                background: var(--rv-primary-soft);
-                color: var(--rv-primary) !important;
-                font-size: .61rem;
                 font-weight: 900;
-                letter-spacing: .035em;
-                text-transform: uppercase;
-            }}
-
-            .rv-inline-badge-free {{
-                background: color-mix(in srgb, var(--rv-free) 13%, transparent);
-                color: var(--rv-free) !important;
-            }}
-
-            .rv-inline-badge-promo {{
-                background: linear-gradient(135deg, var(--rv-primary), var(--rv-blue));
-                color: white !important;
-            }}
-
-            .rv-edit-note {{
-                margin: .2rem 0 .65rem 0;
-                color: var(--rv-muted) !important;
-                font-size: .75rem;
-            }}
-
-            .rv-empty {{
-                padding: 2.25rem 1rem;
-                border: 1px dashed var(--rv-border);
-                border-radius: 1.25rem;
-                background: var(--rv-surface-2);
-                text-align: center;
-            }}
-
-            .rv-empty-icon {{
-                display: inline-grid;
-                width: 3.2rem;
-                height: 3.2rem;
-                place-items: center;
-                border-radius: 1rem;
-                background: var(--rv-primary-soft);
-                font-size: 1.55rem;
-            }}
-
-            .rv-empty-title {{
-                margin-top: .65rem;
-                font-weight: 880;
-            }}
-
-            .rv-empty-copy {{
-                max-width: 35rem;
-                margin: .28rem auto 0 auto;
-                color: var(--rv-muted) !important;
-                font-size: .85rem;
-                line-height: 1.5;
-            }}
-
-            .rv-line-head {{
-                display: flex;
-                align-items: flex-start;
-                justify-content: space-between;
-                gap: .8rem;
-                margin-bottom: .55rem;
-            }}
-
-            .rv-line-title {{
-                margin: 0;
-                font-size: .97rem;
-                font-weight: 860;
-                line-height: 1.3;
-            }}
-
-            .rv-line-meta {{
-                margin: .2rem 0 0 0;
-                color: var(--rv-muted) !important;
-                font-size: .76rem;
-            }}
-
-            .rv-badge {{
-                flex: 0 0 auto;
-                padding: .3rem .58rem;
-                border-radius: 999px;
-                background: var(--rv-primary-soft);
-                color: var(--rv-primary) !important;
-                font-size: .67rem;
-                font-weight: 900;
-                letter-spacing: .035em;
-                text-transform: uppercase;
-            }}
-
-            .rv-badge-free {{
-                background: var(--rv-surface-3);
-                background: color-mix(in srgb, var(--rv-free) 13%, transparent);
-                color: var(--rv-free) !important;
-            }}
-
-            .rv-promotion-head {{
-                display: flex;
-                align-items: flex-start;
-                justify-content: space-between;
-                gap: .9rem;
-                margin-bottom: .8rem;
-                padding-bottom: .72rem;
-                border-bottom: 1px solid var(--rv-border);
-            }}
-
-            .rv-promotion-kicker {{
-                margin: 0 0 .15rem 0;
-                color: var(--rv-primary) !important;
-                font-size: .69rem;
-                font-weight: 900;
-                letter-spacing: .07em;
-                text-transform: uppercase;
-            }}
-
-            .rv-promotion-title {{
-                margin: 0;
-                font-size: 1.02rem;
-                font-weight: 880;
-                line-height: 1.3;
-            }}
-
-            .rv-promotion-code {{
-                margin: .2rem 0 0 0;
-                color: var(--rv-muted) !important;
-                font-size: .75rem;
-            }}
-
-            .rv-promotion-badge {{
-                flex: 0 0 auto;
-                min-width: 3.6rem;
-                padding: .45rem .7rem;
-                border-radius: .9rem;
-                background: linear-gradient(
-                    135deg,
-                    var(--rv-primary),
-                    var(--rv-blue)
-                );
-                color: white !important;
-                font-size: .92rem;
-                font-weight: 900;
-                text-align: center;
-                box-shadow: 0 .45rem 1.1rem var(--rv-shadow);
-            }}
-
-            .rv-subline {{
-                height: 100%;
-                padding: .8rem;
-                border: 1px solid var(--rv-border);
-                border-radius: 1rem;
-                background: var(--rv-surface-2);
-            }}
-
-            .rv-subline-label {{
-                margin: 0 0 .55rem 0;
-                color: var(--rv-muted) !important;
-                font-size: .69rem;
-                font-weight: 900;
-                letter-spacing: .055em;
-                text-transform: uppercase;
-            }}
-
-            .rv-subtotal {{
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: .7rem;
-                margin-top: .65rem;
-                padding: .64rem .72rem;
-                border-radius: .8rem;
-                background: var(--rv-primary-soft);
-            }}
-
-            .rv-subtotal-label {{
-                color: var(--rv-muted) !important;
-                font-size: .72rem;
-            }}
-
-            .rv-subtotal-value {{
-                color: var(--rv-primary) !important;
-                font-size: .98rem;
-                font-weight: 900;
-            }}
-
-            .rv-summary-total {{
-                margin: .75rem 0;
-                padding: 1rem;
-                border: 1px solid var(--rv-border);
-                border-radius: 1.1rem;
-                background:
-                    linear-gradient(
-                        135deg,
-                        var(--rv-primary-soft),
-                        transparent
-                    ),
-                    var(--rv-surface-2);
-            }}
-
-            .rv-summary-total-label {{
-                margin: 0;
-                color: var(--rv-muted) !important;
-                font-size: .72rem;
-                font-weight: 850;
                 letter-spacing: .06em;
                 text-transform: uppercase;
-            }}
+            }
 
-            .rv-summary-total-value {{
-                margin: .1rem 0 0 0;
-                color: var(--rv-primary) !important;
-                font-size: clamp(1.65rem, 6vw, 2.25rem);
-                font-weight: 920;
-                letter-spacing: -.045em;
-            }}
+            .rv-classic-status-value {
+                overflow: hidden;
+                margin: .12rem 0 0;
+                color: var(--rv-text) !important;
+                font-size: .86rem;
+                font-weight: 900;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
 
-            div[data-testid="stVerticalBlockBorderWrapper"] {{
-                border-color: var(--rv-border) !important;
-                border-radius: 1.25rem !important;
-                background: var(--rv-surface);
-                background: color-mix(
-                    in srgb,
-                    var(--rv-surface) 96%,
-                    transparent
-                );
-                box-shadow: 0 .6rem 1.8rem var(--rv-shadow);
-            }}
+            .rv-classic-steps {
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: .5rem;
+                margin: 0 0 .85rem;
+            }
 
-            div[data-testid="stMetric"] {{
-                min-height: 5.3rem;
-                padding: .8rem .88rem;
+            .rv-classic-step {
+                display: flex;
+                align-items: center;
+                gap: .48rem;
+                padding: .55rem .66rem;
                 border: 1px solid var(--rv-border);
-                border-radius: 1rem;
-                background: var(--rv-surface-2);
-            }}
+                border-radius: .8rem;
+                background: var(--rv-surface);
+                color: var(--rv-muted) !important;
+                font-size: .73rem;
+                font-weight: 800;
+            }
 
-            div[data-testid="stMetric"] label {{
+            .rv-classic-step-number {
+                display: grid;
+                flex: 0 0 auto;
+                width: 1.45rem;
+                height: 1.45rem;
+                place-items: center;
+                border-radius: 999px;
+                background: var(--rv-surface-soft);
+                color: var(--rv-muted) !important;
+                font-size: .68rem;
+                font-weight: 950;
+            }
+
+            .rv-classic-step.active {
+                border-color: var(--rv-primary);
+                color: var(--rv-text) !important;
+                box-shadow: 0 0 0 .16rem var(--rv-primary-soft);
+            }
+
+            .rv-classic-step.done {
+                color: var(--rv-text) !important;
+            }
+
+            .rv-classic-step.active .rv-classic-step-number,
+            .rv-classic-step.done .rv-classic-step-number {
+                background: var(--rv-primary);
+                color: #fff !important;
+            }
+
+            .rv-classic-section-title {
+                margin: 0;
+                font-size: 1.04rem;
+                font-weight: 950;
+                letter-spacing: -.025em;
+            }
+
+            .rv-classic-section-copy {
+                margin: .2rem 0 .75rem;
+                color: var(--rv-muted) !important;
+                font-size: .78rem;
+            }
+
+            .rv-classic-product-preview {
+                margin: .65rem 0;
+                padding: .75rem .82rem;
+                border: 1px solid var(--rv-border);
+                border-radius: .85rem;
+                background: var(--rv-surface-soft);
+            }
+
+            .rv-classic-product-name {
+                margin: 0;
+                color: var(--rv-text) !important;
+                font-size: .9rem;
+                font-weight: 900;
+            }
+
+            .rv-classic-product-meta {
+                margin: .18rem 0 0;
+                color: var(--rv-muted) !important;
+                font-size: .72rem;
+            }
+
+            .rv-classic-promo-preview {
+                margin: .65rem 0;
+                padding: .72rem .8rem;
+                border: 1px solid var(--rv-border);
+                border-left: .25rem solid var(--rv-primary);
+                border-radius: .85rem;
+                background: var(--rv-surface-soft);
                 color: var(--rv-muted) !important;
                 font-size: .74rem;
-            }}
+                line-height: 1.45;
+            }
 
-            div[data-testid="stMetricValue"] {{
+            .rv-classic-cart-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                margin: 1rem 0 .55rem;
+            }
+
+            .rv-classic-cart-title {
+                margin: 0;
+                color: var(--rv-text) !important;
+                font-size: 1.28rem;
+                font-weight: 950;
+                letter-spacing: -.035em;
+            }
+
+            .rv-classic-cart-chip {
+                padding: .36rem .64rem;
+                border: 1px solid var(--rv-border);
+                border-radius: 999px;
+                background: var(--rv-surface-soft);
                 color: var(--rv-primary) !important;
-                font-weight: 900;
-            }}
+                font-size: .72rem;
+                font-weight: 950;
+                white-space: nowrap;
+            }
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-            div[data-baseweb="select"] > div,
-            div[data-baseweb="input"] > div,
-            div[data-baseweb="textarea"] > div,
-            textarea {{
-                min-height: 2.85rem;
-                border-color: var(--rv-border) !important;
-                background-color: var(--rv-surface-2) !important;
-                color: var(--rv-text) !important;
-                transition: border-color .16s ease, box-shadow .16s ease;
-            }}
 
-            div[data-baseweb="select"] > div:focus-within,
-            div[data-baseweb="input"] > div:focus-within,
-            div[data-baseweb="textarea"] > div:focus-within {{
-                border-color: var(--rv-primary) !important;
-                box-shadow: 0 0 0 .2rem var(--rv-primary-soft) !important;
-            }}
+# Detecta el tipo de dispositivo usando el ancho REAL de la pantalla.
+#
+# `window.innerWidth` dentro de un componente de Streamlit puede devolver el
+# ancho del iframe del componente y provocar que una computadora se clasifique
+# como teléfono. `window.screen.width` representa el ancho de la pantalla del
+# dispositivo y evita ese problema.
+ancho_dispositivo = streamlit_js_eval(
+    js_expressions="window.screen.width",
+    key="rv_screen_width_v2",
+)
 
-            input, textarea {{
-                color: var(--rv-text) !important;
-                caret-color: var(--rv-primary) !important;
-            }}
-
-            input::placeholder,
-            textarea::placeholder {{
-                color: var(--rv-muted) !important;
-                opacity: .78;
-            }}
-
-            div[data-baseweb="popover"],
-            ul[role="listbox"] {{
-                border-color: var(--rv-border) !important;
-                background: var(--rv-surface) !important;
-                color: var(--rv-text) !important;
-            }}
-
-            li[role="option"] {{
-                color: var(--rv-text) !important;
-            }}
-
-            div[data-testid="stButton"] > button {{
-                min-height: 2.85rem;
-                border-radius: .85rem;
-                border-color: var(--rv-border);
-                font-weight: 820;
-                transition: transform .13s ease, box-shadow .13s ease;
-                touch-action: manipulation;
-            }}
-
-            div[data-testid="stButton"] > button:hover {{
-                transform: translateY(-1px);
-            }}
-
-            button[kind="primary"] {{
-                border: 0 !important;
-                background: linear-gradient(
-                    135deg,
-                    var(--rv-primary),
-                    var(--rv-blue)
-                ) !important;
-                color: white !important;
-                box-shadow: 0 .55rem 1.25rem var(--rv-shadow);
-            }}
-
-            button[kind="secondary"] {{
-                background: var(--rv-surface-2) !important;
-                color: var(--rv-text) !important;
-            }}
-
-            button:focus-visible {{
-                outline: .2rem solid var(--rv-primary) !important;
-                outline-offset: .15rem;
-            }}
-
-            [data-testid="stTabs"] [data-baseweb="tab-list"] {{
-                gap: .4rem;
-                padding: .25rem;
-                border-radius: .95rem;
-                background: var(--rv-surface-2);
-            }}
-
-            [data-testid="stTabs"] [data-baseweb="tab"] {{
-                min-height: 2.55rem;
-                border-radius: .75rem;
-                font-weight: 780;
-            }}
-
-            [data-testid="stExpander"] {{
-                border-color: var(--rv-border) !important;
-                border-radius: .9rem !important;
-                background: var(--rv-surface-2);
-            }}
-
-            [data-testid="stAlertContainer"] {{
-                border-radius: 1rem;
-            }}
-
-            hr {{
-                border-color: var(--rv-border) !important;
-            }}
-
-            @media (max-width: 840px) {{
-                [data-testid="stAppViewBlockContainer"] {{
-                    padding-top: .65rem;
-                    padding-left: .75rem;
-                    padding-right: .75rem;
-                }}
-
-                .rv-hero {{
-                    border-radius: 1.3rem;
-                }}
-
-                .rv-hero-grid {{
-                    flex-direction: column;
-                }}
-
-                .rv-status-strip {{
-                    grid-template-columns: 1fr;
-                }}
-
-                .rv-steps {{
-                    grid-template-columns: 1fr;
-                }}
-
-                div[data-testid="stHorizontalBlock"] {{
-                    flex-wrap: wrap;
-                    gap: .65rem;
-                }}
-
-                div[data-testid="column"] {{
-                    min-width: 100% !important;
-                    flex: 1 1 100% !important;
-                }}
-
-                div[data-testid="stMetric"] {{
-                    min-height: auto;
-                }}
-            }}
-
-            @media (max-width: 520px) {{
-                [data-testid="stAppViewBlockContainer"] {{
-                    padding-left: .58rem;
-                    padding-right: .58rem;
-                }}
-
-                .rv-hero {{
-                    padding: 1rem;
-                    border-radius: 1.1rem;
-                }}
-
-                .rv-auto-theme {{
-                    white-space: normal;
-                }}
-
-                .rv-pills {{
-                    gap: .32rem;
-                }}
-
-                .rv-pill {{
-                    font-size: .67rem;
-                }}
-
-                input, textarea {{
-                    font-size: 16px !important;
-                }}
-
-                div[data-testid="stButton"] > button {{
-                    min-height: 3rem;
-                }}
-            }}
-
-            @media (max-width: 520px) {{
-                .rv-compact-item {{
-                    grid-template-columns: minmax(0, 1fr) auto;
-                    gap: .5rem;
-                }}
-
-                .rv-compact-name {{
-                    font-size: .88rem;
-                }}
-
-                .rv-compact-detail {{
-                    margin-left: 0;
-                    font-size: .7rem;
-                }}
-
-                .rv-item-number {{
-                    display: none;
-                }}
-
-                .rv-compact-total {{
-                    min-width: 4.8rem;
-                }}
-
-                .rv-compact-total-value {{
-                    font-size: .9rem;
-                }}
-            }}
-
-            @media (prefers-reduced-motion: reduce) {{
-                html {{
-                    scroll-behavior: auto;
-                }}
-
-                *, *::before, *::after {{
-                    animation-duration: .01ms !important;
-                    animation-iteration-count: 1 !important;
-                    transition-duration: .01ms !important;
-                }}
-            }}
-        </style>
-        """,
+if ancho_dispositivo is None:
+    st.markdown(
+        '<div class="rv-loading">Preparando la interfaz…</div>',
         unsafe_allow_html=True,
     )
+    st.stop()
 
 
-aplicar_estilos()
+def obtener_modo_forzado() -> str:
+    """Permite forzar la interfaz con ?ui=desktop o ?ui=mobile."""
+
+    try:
+        valor = st.query_params.get("ui", "")
+    except Exception:
+        return ""
+
+    if isinstance(valor, list):
+        valor = valor[0] if valor else ""
+
+    valor = str(valor).strip().lower()
+    return valor if valor in {"desktop", "mobile"} else ""
+
+
+MODO_FORZADO = obtener_modo_forzado()
+
+if MODO_FORZADO == "mobile":
+    ES_MOVIL = True
+elif MODO_FORZADO == "desktop":
+    ES_MOVIL = False
+else:
+    try:
+        ES_MOVIL = int(float(ancho_dispositivo)) <= 820
+    except (TypeError, ValueError):
+        # Si el navegador no devuelve un valor válido, se prioriza escritorio
+        # para no mostrar una interfaz móvil comprimida en una computadora.
+        ES_MOVIL = False
 
 
 # =============================================================================
-# CONFIGURACIÓN SEGURA DE ODOO
+# CONFIGURACIÓN Y ODOO
 # =============================================================================
 
 
 def obtener_configuracion() -> tuple[str, str, str, str]:
-    """Obtiene credenciales desde secrets.toml o variables de entorno."""
-
     try:
         secretos = st.secrets.get("odoo", {})
     except Exception:
@@ -1080,11 +987,6 @@ def obtener_configuracion() -> tuple[str, str, str, str]:
 URL, DB, USER, PASSWORD = obtener_configuracion()
 
 
-# =============================================================================
-# CONEXIÓN CON ODOO
-# =============================================================================
-
-
 @st.cache_data(ttl=600, show_spinner=False)
 def cargar_datos_odoo(
     url: str,
@@ -1092,20 +994,13 @@ def cargar_datos_odoo(
     usuario: str,
     password: str,
 ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
-    common = xmlrpc.client.ServerProxy(
-        f"{url}/xmlrpc/2/common",
-        allow_none=True,
-    )
-
+    common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True)
     uid = common.authenticate(db, usuario, password, {})
 
     if not uid:
         raise RuntimeError("Odoo rechazó las credenciales proporcionadas.")
 
-    models = xmlrpc.client.ServerProxy(
-        f"{url}/xmlrpc/2/object",
-        allow_none=True,
-    )
+    models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object", allow_none=True)
 
     clientes = models.execute_kw(
         db,
@@ -1128,7 +1023,7 @@ def cargar_datos_odoo(
         "search_read",
         [[("sale_ok", "=", True), ("active", "=", True)]],
         {
-            "fields": ["id", "default_code", "name", "list_price"],
+            "fields": ["id", "default_code", "name", "list_price", "categ_id"],
             "order": "default_code asc, name asc",
         },
     )
@@ -1142,39 +1037,29 @@ def crear_pedido_odoo(
     carrito: list[dict[str, Any]],
     nota: str,
 ) -> tuple[int, str, str]:
-    """
-    Crea la orden con los campos mínimos necesarios.
+    models = xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/object", allow_none=True)
 
-    No se envía product_uom ni product_uom_id. Odoo determina la unidad de
-    medida a partir del producto y se evita el error de campos incompatibles.
-    """
+    lineas_odoo = [
+        (
+            0,
+            0,
+            {
+                "product_id": int(linea["product_id"]),
+                "product_uom_qty": int(linea["cantidad"]),
+                "price_unit": float(linea["precio_unitario"]),
+            },
+        )
+        for linea in carrito
+    ]
 
-    models = xmlrpc.client.ServerProxy(
-        f"{URL}/xmlrpc/2/object",
-        allow_none=True,
-    )
-
-    lineas_odoo: list[tuple[int, int, dict[str, Any]]] = []
-
-    for linea in carrito:
-        cantidad = int(linea["cantidad"])
-        precio = float(linea["precio_unitario"])
-        valores_linea: dict[str, Any] = {
-            "product_id": int(linea["product_id"]),
-            "product_uom_qty": cantidad,
-            "price_unit": precio,
-        }
-
-        lineas_odoo.append((0, 0, valores_linea))
-
-    valores_orden: dict[str, Any] = {
+    valores: dict[str, Any] = {
         "partner_id": int(cliente_id),
         "order_line": lineas_odoo,
-        "origin": "RapyVet | Captura móvil de pedidos",
+        "origin": "RapyVet POS | Captura rápida",
     }
 
     if nota.strip():
-        valores_orden["note"] = nota.strip()
+        valores["note"] = nota.strip()
 
     sale_order_id = models.execute_kw(
         DB,
@@ -1182,11 +1067,10 @@ def crear_pedido_odoo(
         PASSWORD,
         "sale.order",
         "create",
-        [valores_orden],
+        [valores],
     )
 
     estado = "Cotización creada"
-
     if CONFIRMAR_AUTOMATICAMENTE:
         models.execute_kw(
             DB,
@@ -1199,7 +1083,6 @@ def crear_pedido_odoo(
         estado = "Pedido confirmado"
 
     folio = str(sale_order_id)
-
     try:
         registro = models.execute_kw(
             DB,
@@ -1210,7 +1093,6 @@ def crear_pedido_odoo(
             [[sale_order_id]],
             {"fields": ["name", "state"]},
         )
-
         if registro:
             folio = str(registro[0].get("name") or folio)
     except Exception:
@@ -1228,123 +1110,116 @@ def moneda(valor: float) -> str:
     return f"${valor:,.2f}"
 
 
-def texto_seguro(valor: Any) -> str:
+def seguro(valor: Any) -> str:
     return html.escape(str(valor or ""))
 
 
-def construir_mensaje_whatsapp(
-    nombre_cliente: str,
-    carrito: list[dict[str, Any]],
-) -> str:
-    """
-    Genera un mensaje breve para compartir en el grupo de WhatsApp.
-
-    Solo incluye el nombre del cliente y los productos. Las líneas gratuitas
-    se identifican claramente, pero no se muestran precios, folio ni total.
-    """
-
-    lineas_mensaje = [str(nombre_cliente).strip() or "Cliente", ""]
-
-    for linea in carrito:
-        nombre = str(
-            linea.get("nombre_producto")
-            or "Producto sin nombre"
-        ).strip()
-        cantidad = max(1, int(linea.get("cantidad") or 1))
-        precio = float(linea.get("precio_unitario") or 0.0)
-        parte_promocion = str(
-            linea.get("parte_promocion") or ""
-        ).lower()
-        tipo = str(linea.get("tipo") or "").lower()
-
-        es_gratis = (
-            precio == 0.0
-            or parte_promocion == "gratis"
-            or tipo in {"gratis", "promocion_gratis"}
-        )
-
-        texto_linea = f"{cantidad} x {nombre}"
-        if es_gratis:
-            texto_linea += " (GRATIS)"
-
-        lineas_mensaje.append(texto_linea)
-
-    return "\n".join(lineas_mensaje).strip()
+def normalizar(valor: Any) -> str:
+    texto = unicodedata.normalize("NFKD", str(valor or ""))
+    return "".join(c for c in texto if not unicodedata.combining(c)).lower().strip()
 
 
-def crear_enlace_whatsapp(mensaje: str) -> str:
-    """Abre WhatsApp con el texto listo para elegir el grupo."""
-
-    return (
-        "https://api.whatsapp.com/send?text="
-        + quote(mensaje, safe="")
-    )
+def categoria_producto(producto: dict[str, Any]) -> str:
+    categoria = producto.get("categ_id")
+    if isinstance(categoria, (list, tuple)) and len(categoria) >= 2:
+        return str(categoria[1])
+    return "Sin categoría"
 
 
-def crear_linea_carrito(
+def crear_linea(
     producto: dict[str, Any],
     cantidad: int,
-    precio_unitario: float,
-    tipo: str,
+    precio: float,
+    *,
+    tipo: str = "venta",
     grupo_promocion: str | None = None,
     parte_promocion: str | None = None,
 ) -> dict[str, Any]:
     return {
         "linea_id": uuid.uuid4().hex,
         "product_id": int(producto["id"]),
-        "nombre_producto": str(producto.get("name") or "Producto sin nombre"),
+        "nombre_producto": str(producto.get("name") or "Producto"),
         "codigo": str(producto.get("default_code") or "S/C"),
-        "precio_lista": float(producto.get("list_price") or 0.0),
         "cantidad": max(1, int(cantidad)),
-        "precio_unitario": max(0.0, float(precio_unitario)),
+        "precio_unitario": max(0.0, float(precio)),
         "tipo": tipo,
         "grupo_promocion": grupo_promocion,
         "parte_promocion": parte_promocion,
     }
 
 
-def agregar_linea_normal(
-    producto: dict[str, Any],
-    cantidad: int,
-    precio_unitario: float,
-) -> None:
-    st.session_state.carrito.append(
-        crear_linea_carrito(
-            producto=producto,
-            cantidad=cantidad,
-            precio_unitario=precio_unitario,
-            tipo="venta",
-        )
+def registrar_reciente(producto_id: int) -> None:
+    recientes = [
+        int(pid)
+        for pid in st.session_state.productos_recientes
+        if int(pid) != int(producto_id)
+    ]
+    st.session_state.productos_recientes = [int(producto_id), *recientes][:12]
+
+
+def limpiar_claves_edicion(linea_ids: list[str]) -> None:
+    for clave in list(st.session_state.keys()):
+        if any(linea_id in clave for linea_id in linea_ids) and clave.startswith(
+            ("desktop_", "mobile_")
+        ):
+            del st.session_state[clave]
+
+
+def agregar_venta_rapida(producto_id: int) -> None:
+    producto = productos_por_id[int(producto_id)]
+    precio_lista = float(producto.get("list_price") or 0.0)
+
+    # Si ya existe la misma venta al precio de lista, aumenta su cantidad.
+    existente = next(
+        (
+            linea
+            for linea in st.session_state.carrito
+            if int(linea["product_id"]) == int(producto_id)
+            and not linea.get("grupo_promocion")
+            and abs(float(linea["precio_unitario"]) - precio_lista) < 0.0001
+        ),
+        None,
     )
+
+    if existente:
+        existente["cantidad"] = int(existente["cantidad"]) + 1
+        limpiar_claves_edicion([str(existente["linea_id"])])
+    else:
+        st.session_state.carrito.append(crear_linea(producto, 1, precio_lista))
+
+    registrar_reciente(int(producto_id))
+    limpiar_busqueda_catalogo()
+    st.session_state.notificacion_pendiente = {
+        "texto": f"{producto.get('name') or 'Producto'} agregado",
+        "icono": "✅",
+    }
+
+
+def abrir_promocion(producto_id: int) -> None:
+    st.session_state.producto_promocion_id = int(producto_id)
 
 
 def agregar_promocion(
     producto: dict[str, Any],
     cantidad_cobrada: int,
     cantidad_gratis: int,
-    precio_unitario: float,
+    precio: float,
 ) -> None:
-    """Agrega exactamente dos líneas del mismo producto."""
-
-    cobradas = max(1, int(cantidad_cobrada))
-    gratis = max(1, int(cantidad_gratis))
-    precio = max(0.0, float(precio_unitario))
     grupo = uuid.uuid4().hex
-
     st.session_state.carrito.extend(
         [
-            crear_linea_carrito(
-                producto=producto,
-                cantidad=cobradas,
-                precio_unitario=precio,
+            crear_linea(
+                producto,
+                cantidad_cobrada,
+                precio,
                 tipo="promocion_cobrada",
                 grupo_promocion=grupo,
                 parte_promocion="cobrada",
             ),
-            crear_linea_carrito(
-                producto=producto,
-                cantidad=gratis,
-                precio_unitario=0.0,
+            crear_linea(
+                producto,
+                cantidad_gratis,
+                0.0,
                 tipo="promocion_gratis",
                 grupo_promocion=grupo,
                 parte_promocion="gratis",
@@ -1352,347 +1227,126 @@ def agregar_promocion(
         ]
     )
 
-def buscar_linea(linea_id: str) -> dict[str, Any] | None:
-    return next(
-        (
-            linea
-            for linea in st.session_state.carrito
-            if str(linea["linea_id"]) == linea_id
-        ),
+
+def cambiar_cantidad(linea_id: str, diferencia: int) -> None:
+    linea = next(
+        (x for x in st.session_state.carrito if str(x["linea_id"]) == str(linea_id)),
         None,
     )
-
-
-def lineas_del_grupo(grupo_id: str) -> list[dict[str, Any]]:
-    return [
-        linea
-        for linea in st.session_state.carrito
-        if linea.get("grupo_promocion") == grupo_id
-    ]
-
-
-def limpiar_widgets_linea(linea_id: str) -> None:
-    prefijos = (
-        "cantidad_",
-        "precio_",
-    )
-    for prefijo in prefijos:
-        st.session_state.pop(f"{prefijo}{linea_id}", None)
+    if not linea:
+        return
+    linea["cantidad"] = max(1, int(linea["cantidad"]) + int(diferencia))
 
 
 def eliminar_linea(linea_id: str) -> None:
     st.session_state.carrito = [
         linea
         for linea in st.session_state.carrito
-        if str(linea["linea_id"]) != linea_id
+        if str(linea["linea_id"]) != str(linea_id)
     ]
-    limpiar_widgets_linea(linea_id)
-
-
-def duplicar_linea(linea_id: str) -> None:
-    linea = buscar_linea(linea_id)
-    if not linea:
-        return
-
-    nueva = dict(linea)
-    nueva.update(
-        {
-            "linea_id": uuid.uuid4().hex,
-            "grupo_promocion": None,
-            "parte_promocion": None,
-            "tipo": "venta",
-            "cantidad": int(
-                st.session_state.get(
-                    f"cantidad_{linea_id}",
-                    linea["cantidad"],
-                )
-            ),
-            "precio_unitario": float(
-                st.session_state.get(
-                    f"precio_{linea_id}",
-                    linea["precio_unitario"],
-                )
-            ),
-        }
-    )
-    st.session_state.carrito.append(nueva)
-
-
-def hacer_linea_gratis(linea_id: str) -> None:
-    linea = buscar_linea(linea_id)
-    if not linea:
-        return
-
-    linea["precio_unitario"] = 0.0
-    linea["tipo"] = "gratis"
-    st.session_state[f"precio_{linea_id}"] = 0.0
 
 
 def eliminar_promocion(grupo_id: str) -> None:
     ids = [
         str(linea["linea_id"])
         for linea in st.session_state.carrito
-        if linea.get("grupo_promocion") == grupo_id
+        if str(linea.get("grupo_promocion")) == str(grupo_id)
     ]
-
     st.session_state.carrito = [
         linea
         for linea in st.session_state.carrito
-        if linea.get("grupo_promocion") != grupo_id
+        if str(linea.get("grupo_promocion")) != str(grupo_id)
     ]
-
-    for linea_id in ids:
-        limpiar_widgets_linea(linea_id)
-
-
-
-def duplicar_promocion(grupo_id: str) -> None:
-    originales = lineas_del_grupo(grupo_id)
-    if len(originales) != 2:
-        return
-
-    nuevo_grupo = uuid.uuid4().hex
-
-    for linea in originales:
-        linea_id = str(linea["linea_id"])
-        nueva = dict(linea)
-        nueva.update(
-            {
-                "linea_id": uuid.uuid4().hex,
-                "grupo_promocion": nuevo_grupo,
-                "cantidad": int(
-                    st.session_state.get(
-                        f"cantidad_{linea_id}",
-                        linea["cantidad"],
-                    )
-                ),
-                "precio_unitario": (
-                    0.0
-                    if linea.get("parte_promocion") == "gratis"
-                    else float(
-                        st.session_state.get(
-                            f"precio_{linea_id}",
-                            linea["precio_unitario"],
-                        )
-                    )
-                ),
-            }
-        )
-        st.session_state.carrito.append(nueva)
 
 
 def vaciar_carrito() -> None:
-    for linea in st.session_state.carrito:
-        limpiar_widgets_linea(str(linea["linea_id"]))
-
     st.session_state.carrito = []
 
 
 def reiniciar_pedido() -> None:
     vaciar_carrito()
+    st.session_state.cliente_id = None
+    st.session_state.resultado_pedido = None
+    st.session_state.nota_pedido = ""
+    st.session_state.desktop_nota_pedido = ""
+    st.session_state.mobile_nota_pedido = ""
+    limpiar_busqueda_catalogo()
+    st.session_state.categoria_pos = "Todas"
+    st.session_state.vista_pos = "Todos"
 
-    claves = (
-        "cliente_id",
-        "producto_id",
-        "ultimo_producto_id",
-        "cantidad_normal",
-        "precio_normal",
-        "preset_promocion",
-        "cantidad_cobrada",
-        "cantidad_gratis",
-        "precio_promocion",
-        "nota_pedido",
-        "resultado_pedido",
-        "mostrar_balloons",
-        "limpiar_selector_producto",
-        "notificacion_temporal",
+
+def sincronizar_nota_pedido(origen: str) -> None:
+    """Mantiene la nota sincronizada entre carrito de escritorio y móvil."""
+    clave_origen = f"{origen}_nota_pedido"
+    nota = str(st.session_state.get(clave_origen, ""))
+
+    st.session_state.nota_pedido = nota
+
+    for destino in ("desktop", "mobile"):
+        clave_destino = f"{destino}_nota_pedido"
+        if clave_destino != clave_origen:
+            st.session_state[clave_destino] = nota
+
+
+def construir_mensaje_whatsapp(
+    nombre_cliente: str,
+    carrito: list[dict[str, Any]],
+) -> str:
+    lineas = [nombre_cliente.strip() or "Cliente", ""]
+    for linea in carrito:
+        texto = f"{int(linea['cantidad'])} x {linea['nombre_producto']}"
+        if float(linea["precio_unitario"]) == 0.0:
+            texto += " (GRATIS)"
+        lineas.append(texto)
+    return "\n".join(lineas).strip()
+
+
+def crear_enlace_whatsapp(mensaje: str) -> str:
+    return f"https://wa.me/?text={quote(mensaje, safe='')}"
+
+
+def resetear_catalogo() -> None:
+    st.session_state.pagina_catalogo = 0
+
+
+def limpiar_busqueda_catalogo() -> None:
+    """Limpia el buscador y fuerza un campo nuevo en el componente keyup."""
+    st.session_state.busqueda_pos = ""
+    st.session_state.busqueda_widget_version = (
+        int(st.session_state.busqueda_widget_version) + 1
     )
+    st.session_state.pagina_catalogo = 0
 
-    for clave in claves:
-        st.session_state.pop(clave, None)
-
-    inicializar_estado()
-
-
-def aplicar_preset_promocion() -> None:
-    valor = str(st.session_state.get("preset_promocion", "Personalizada"))
-    if valor == "Personalizada" or "+" not in valor:
-        return
-
-    cobradas, gratis = valor.split("+", maxsplit=1)
-    st.session_state.cantidad_cobrada = int(cobradas)
-    st.session_state.cantidad_gratis = int(gratis)
+    # Elimina estados antiguos del componente para no acumular claves en la sesión.
+    for clave in list(st.session_state.keys()):
+        if str(clave).startswith("busqueda_pos_input_"):
+            del st.session_state[clave]
 
 
-def validar_carrito(carrito: list[dict[str, Any]]) -> list[str]:
-    errores: list[str] = []
-
-    if not carrito:
-        return ["El carrito está vacío."]
-
-    for indice, linea in enumerate(carrito, start=1):
-        if int(linea.get("cantidad", 0)) < 1:
-            errores.append(f"La línea {indice} tiene una cantidad inválida.")
-        if float(linea.get("precio_unitario", -1)) < 0:
-            errores.append(f"La línea {indice} tiene un precio inválido.")
-
-    grupos = {
-        str(linea["grupo_promocion"])
-        for linea in carrito
-        if linea.get("grupo_promocion")
-    }
-
-    for grupo in grupos:
-        lineas = [
-            linea
-            for linea in carrito
-            if str(linea.get("grupo_promocion")) == grupo
-        ]
-        cobradas = [
-            linea
-            for linea in lineas
-            if linea.get("parte_promocion") == "cobrada"
-        ]
-        gratis = [
-            linea
-            for linea in lineas
-            if linea.get("parte_promocion") == "gratis"
-        ]
-
-        if len(lineas) != 2 or len(cobradas) != 1 or len(gratis) != 1:
-            errores.append(
-                "Hay una promoción incompleta. Debe contener una línea "
-                "cobrada y una línea gratis."
-            )
-            continue
-
-        if float(gratis[0].get("precio_unitario", -1)) != 0.0:
-            errores.append("Una línea de promoción gratis no tiene precio $0.00.")
-
-    return errores
+def solicitar_envio() -> None:
+    st.session_state.enviar_pedido = True
 
 
-def sincronizar_carrito_desde_widgets() -> None:
-    """Sincroniza cantidades y precios antes de calcular totales o resúmenes."""
-
-    for linea in st.session_state.carrito:
-        linea_id = str(linea["linea_id"])
-        clave_cantidad = f"cantidad_{linea_id}"
-        clave_precio = f"precio_{linea_id}"
-
-        if clave_cantidad in st.session_state:
-            linea["cantidad"] = max(
-                1,
-                int(st.session_state[clave_cantidad]),
-            )
-
-        if linea.get("parte_promocion") == "gratis":
-            linea["precio_unitario"] = 0.0
-        elif clave_precio in st.session_state:
-            linea["precio_unitario"] = max(
-                0.0,
-                float(st.session_state[clave_precio]),
-            )
-
-
-def elementos_visuales_carrito() -> list[tuple[str, list[dict[str, Any]]]]:
-    """Agrupa promociones visualmente sin alterar sus dos líneas internas."""
-
-    elementos: list[tuple[str, list[dict[str, Any]]]] = []
-    grupos_vistos: set[str] = set()
-
-    for linea in st.session_state.carrito:
-        grupo = linea.get("grupo_promocion")
-
-        if grupo:
-            grupo = str(grupo)
-            if grupo in grupos_vistos:
-                continue
-            grupos_vistos.add(grupo)
-            elementos.append(("promocion", lineas_del_grupo(grupo)))
-        else:
-            elementos.append(("linea", [linea]))
-
-    return elementos
-
-
-# =============================================================================
-# ENCABEZADO
-# =============================================================================
-
-
-tema_actual = obtener_tipo_tema()
-icono_tema = "🌙" if tema_actual == "dark" else "☀️"
-nombre_tema = "Oscuro" if tema_actual == "dark" else "Claro"
-
-st.markdown(
-    f"""
-    <div class="rv-hero">
-        <div class="rv-hero-grid">
-            <div>
-                <p class="rv-kicker">Captura de pedidos</p>
-                <h1 class="rv-title">🐾 RapyVet Pedidos</h1>
-                <p class="rv-subtitle">
-                    Agrega productos, configura promociones y envía la orden a
-                    Odoo desde teléfono, tableta o computadora.
-                </p>
-            </div>
-            <span class="rv-auto-theme">
-                {icono_tema} Tema automático · {nombre_tema}
-            </span>
-        </div>
-        <div class="rv-pills">
-            <span class="rv-pill">Dos líneas por promoción</span>
-            <span class="rv-pill">Precios editables</span>
-            <span class="rv-pill">Productos repetidos</span>
-            <span class="rv-pill">Diseño responsivo</span>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+def cambiar_tab_movil(destino: str) -> None:
+    st.session_state.mobile_tab = destino
 
 
 # =============================================================================
 # CARGA DE DATOS
 # =============================================================================
 
-
 try:
     with st.spinner("Conectando con Odoo..."):
-        uid, lista_clientes, lista_productos = cargar_datos_odoo(
-            URL,
-            DB,
-            USER,
-            PASSWORD,
-        )
+        uid, lista_clientes, lista_productos = cargar_datos_odoo(URL, DB, USER, PASSWORD)
 except xmlrpc.client.Fault as error:
-    st.error("Odoo rechazó la solicitud al cargar los datos.")
-    with st.expander("Ver detalle técnico"):
-        st.code(error.faultString)
-    st.stop()
-except xmlrpc.client.ProtocolError as error:
-    st.error(
-        "No fue posible comunicarse con Odoo. "
-        f"Código HTTP: {error.errcode}"
-    )
+    st.error(f"Odoo devolvió un error: {error.faultString}")
     st.stop()
 except Exception as error:
-    st.error("No fue posible cargar los datos de Odoo.")
-    with st.expander("Ver detalle técnico"):
-        st.code(str(error))
+    st.error(f"No fue posible cargar los datos de Odoo: {error}")
     st.stop()
 
-
-clientes_por_id = {
-    int(cliente["id"]): cliente
-    for cliente in lista_clientes
-}
-
-productos_por_id = {
-    int(producto["id"]): producto
-    for producto in lista_productos
-}
+clientes_por_id = {int(c["id"]): c for c in lista_clientes}
+productos_por_id = {int(p["id"]): p for p in lista_productos}
 
 if not clientes_por_id:
     st.warning("No se encontraron clientes activos en Odoo.")
@@ -1704,7 +1358,7 @@ if not productos_por_id:
 
 
 # =============================================================================
-# FUNCIONES QUE DEPENDEN DE LOS DATOS CARGADOS
+# CATÁLOGO Y CARRITO
 # =============================================================================
 
 
@@ -1715,16 +1369,17 @@ def etiqueta_cliente(cliente_id: int) -> str:
     return f"{nombre} · {ciudad}"
 
 
-def etiqueta_producto(producto_id: int) -> str:
-    producto = productos_por_id[producto_id]
-    codigo = producto.get("default_code") or "S/C"
-    nombre = producto.get("name") or "Producto sin nombre"
+
+def etiqueta_producto_desktop(producto_id: int) -> str:
+    producto = productos_por_id[int(producto_id)]
+    codigo = str(producto.get("default_code") or "S/C")
+    nombre = str(producto.get("name") or "Producto")
     precio = float(producto.get("list_price") or 0.0)
     return f"{codigo} — {nombre} · {moneda(precio)}"
 
 
-def sincronizar_producto_seleccionado() -> None:
-    producto_id = st.session_state.get("producto_id")
+def sincronizar_producto_desktop() -> None:
+    producto_id = st.session_state.get("desktop_producto_id")
     if producto_id is None:
         return
 
@@ -1733,840 +1388,1333 @@ def sincronizar_producto_seleccionado() -> None:
         return
 
     precio = float(producto.get("list_price") or 0.0)
-    st.session_state.precio_normal = precio
-    st.session_state.precio_promocion = precio
-    st.session_state.cantidad_normal = 1
-    st.session_state.cantidad_cobrada = 1
-    st.session_state.cantidad_gratis = 1
-    st.session_state.preset_promocion = "1+1"
-    st.session_state.ultimo_producto_id = int(producto_id)
+    st.session_state.desktop_ultimo_producto_id = int(producto_id)
+    st.session_state.desktop_cantidad_normal = 1
+    st.session_state.desktop_precio_normal = precio
+    st.session_state.desktop_preset_promocion = "1+1"
+    st.session_state.desktop_cantidad_cobrada = 1
+    st.session_state.desktop_cantidad_gratis = 1
+    st.session_state.desktop_precio_promocion = precio
+
+
+def aplicar_preset_desktop() -> None:
+    valor = str(st.session_state.get("desktop_preset_promocion") or "Otra")
+    if valor == "Otra" or "+" not in valor:
+        return
+
+    cobradas, gratis = valor.split("+", maxsplit=1)
+    st.session_state.desktop_cantidad_cobrada = int(cobradas)
+    st.session_state.desktop_cantidad_gratis = int(gratis)
+
+
+def agregar_venta_desktop(
+    producto_id: int,
+    cantidad: int,
+    precio: float,
+) -> None:
+    producto = productos_por_id[int(producto_id)]
+    st.session_state.carrito.append(
+        crear_linea(producto, int(cantidad), float(precio))
+    )
+    registrar_reciente(int(producto_id))
+    st.session_state.desktop_limpiar_producto = True
+    st.session_state.notificacion_pendiente = {
+        "texto": f"{producto.get('name') or 'Producto'} agregado al carrito",
+        "icono": "✅",
+    }
+
+
+def agregar_promocion_desktop(
+    producto_id: int,
+    cantidad_cobrada: int,
+    cantidad_gratis: int,
+    precio: float,
+) -> None:
+    producto = productos_por_id[int(producto_id)]
+    agregar_promocion(
+        producto,
+        int(cantidad_cobrada),
+        int(cantidad_gratis),
+        float(precio),
+    )
+    registrar_reciente(int(producto_id))
+    st.session_state.desktop_limpiar_producto = True
+    st.session_state.notificacion_pendiente = {
+        "texto": (
+            f"Promoción {int(cantidad_cobrada)}+{int(cantidad_gratis)} de "
+            f"{producto.get('name') or 'producto'} agregada"
+        ),
+        "icono": "🎁",
+    }
+
+
+def filtrar_productos() -> list[int]:
+    consulta = normalizar(st.session_state.busqueda_pos)
+    categoria = st.session_state.categoria_pos
+    vista = st.session_state.vista_pos
+
+    if vista == "Recientes":
+        candidatos = [
+            int(pid)
+            for pid in st.session_state.productos_recientes
+            if int(pid) in productos_por_id
+        ]
+    else:
+        candidatos = list(productos_por_id.keys())
+
+    terminos = consulta.split()
+    resultados: list[tuple[int, str, int]] = []
+
+    for producto_id in candidatos:
+        producto = productos_por_id[producto_id]
+        if categoria != "Todas" and categoria_producto(producto) != categoria:
+            continue
+
+        codigo = normalizar(producto.get("default_code") or "")
+        nombre = normalizar(producto.get("name") or "")
+        combinado = f"{codigo} {nombre}"
+
+        if terminos and not all(termino in combinado for termino in terminos):
+            continue
+
+        if consulta and consulta == codigo:
+            prioridad = 0
+        elif consulta and codigo.startswith(consulta):
+            prioridad = 1
+        elif consulta and nombre.startswith(consulta):
+            prioridad = 2
+        else:
+            prioridad = 3
+
+        resultados.append((prioridad, nombre, int(producto_id)))
+
+    resultados.sort(key=lambda item: (item[0], item[1]))
+    return [producto_id for _, _, producto_id in resultados]
+
+
+def elementos_carrito() -> list[tuple[str, list[dict[str, Any]]]]:
+    salida: list[tuple[str, list[dict[str, Any]]]] = []
+    grupos_vistos: set[str] = set()
+
+    for linea in st.session_state.carrito:
+        grupo = linea.get("grupo_promocion")
+        if not grupo:
+            salida.append(("linea", [linea]))
+            continue
+        if str(grupo) in grupos_vistos:
+            continue
+        grupos_vistos.add(str(grupo))
+        lineas = [
+            item
+            for item in st.session_state.carrito
+            if str(item.get("grupo_promocion")) == str(grupo)
+        ]
+        salida.append(("promocion", lineas))
+
+    return salida
+
+
+def totales_carrito() -> tuple[int, int, int, float]:
+    lineas = len(st.session_state.carrito)
+    unidades = sum(int(x["cantidad"]) for x in st.session_state.carrito)
+    gratis = sum(
+        int(x["cantidad"])
+        for x in st.session_state.carrito
+        if float(x["precio_unitario"]) == 0.0
+    )
+    total = sum(
+        int(x["cantidad"]) * float(x["precio_unitario"])
+        for x in st.session_state.carrito
+    )
+    return lineas, unidades, gratis, total
+
+
+def render_carrito(
+    prefijo: str,
+    *,
+    mostrar_vaciar: bool = True,
+    mostrar_envio: bool = True,
+) -> None:
+    elementos = elementos_carrito()
+
+    if not elementos:
+        st.markdown(
+            """
+            <div class="rv-empty">
+                <div class="rv-empty-icon">🛒</div>
+                <div class="rv-empty-title">Tu carrito está vacío</div>
+                <div class="rv-empty-copy">Abre Productos y toca “Agregar”. El carrito se actualizará al instante.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if prefijo == "mobile":
+            return
+    else:
+        if mostrar_vaciar:
+            if st.button(
+                "Vaciar carrito",
+                key=f"{prefijo}_vaciar",
+                use_container_width=True,
+            ):
+                vaciar_carrito()
+                st.rerun()
+
+        for tipo_elemento, lineas in elementos:
+            if tipo_elemento == "linea":
+                linea = lineas[0]
+                linea_id = str(linea["linea_id"])
+                cantidad = int(linea["cantidad"])
+                precio = float(linea["precio_unitario"])
+                subtotal = cantidad * precio
+                chip = (
+                    '<span class="rv-free-chip">GRATIS</span>'
+                    if precio == 0.0
+                    else ""
+                )
+
+                with st.container(border=True):
+                    st.markdown(
+                        f"""
+                        <div class="rv-cart-line">
+                            <div>
+                                <p class="rv-cart-name">{seguro(linea['nombre_producto'])}{chip}</p>
+                                <p class="rv-cart-detail">{cantidad} × {moneda(precio)} · {seguro(linea['codigo'])}</p>
+                            </div>
+                            <p class="rv-cart-subtotal">{moneda(subtotal)}</p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    if prefijo == "mobile":
+                        menos, numero, mas = st.columns([1, 1.4, 1])
+                    else:
+                        menos, numero, mas = st.columns([1, 1.15, 1])
+
+                    with menos:
+                        st.button(
+                            "−",
+                            key=f"{prefijo}_minus_{linea_id}",
+                            use_container_width=True,
+                            on_click=cambiar_cantidad,
+                            args=(linea_id, -1),
+                        )
+                    with numero:
+                        st.markdown(
+                            f'<div class="rv-qty-display">{cantidad}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with mas:
+                        st.button(
+                            "+",
+                            key=f"{prefijo}_plus_{linea_id}",
+                            use_container_width=True,
+                            on_click=cambiar_cantidad,
+                            args=(linea_id, 1),
+                        )
+
+                    with st.popover("Editar precio o eliminar", use_container_width=True):
+                        with st.form(f"{prefijo}_form_{linea_id}"):
+                            nueva_cantidad = st.number_input(
+                                "Cantidad",
+                                min_value=1,
+                                value=cantidad,
+                                step=1,
+                                key=f"{prefijo}_qty_{linea_id}_{cantidad}_{precio:.2f}",
+                            )
+                            nuevo_precio = st.number_input(
+                                "Precio unitario",
+                                min_value=0.0,
+                                value=precio,
+                                step=0.01,
+                                format="%.2f",
+                                key=f"{prefijo}_price_{linea_id}_{cantidad}_{precio:.2f}",
+                            )
+                            guardar = st.form_submit_button(
+                                "Guardar cambios",
+                                type="primary",
+                                use_container_width=True,
+                            )
+                            if guardar:
+                                linea["cantidad"] = int(nueva_cantidad)
+                                linea["precio_unitario"] = float(nuevo_precio)
+                                st.rerun()
+
+                        if st.button(
+                            "Eliminar producto",
+                            key=f"{prefijo}_delete_{linea_id}",
+                            use_container_width=True,
+                        ):
+                            eliminar_linea(linea_id)
+                            st.rerun()
+
+            else:
+                if len(lineas) != 2:
+                    st.error("Promoción incompleta")
+                    continue
+
+                cobrada = next(
+                    (x for x in lineas if x.get("parte_promocion") == "cobrada"),
+                    lineas[0],
+                )
+                gratis = next(
+                    (x for x in lineas if x.get("parte_promocion") == "gratis"),
+                    lineas[1],
+                )
+                grupo_id = str(cobrada["grupo_promocion"])
+                paid_id = str(cobrada["linea_id"])
+                free_id = str(gratis["linea_id"])
+                combinacion = f"{int(cobrada['cantidad'])}+{int(gratis['cantidad'])}"
+                subtotal = int(cobrada["cantidad"]) * float(cobrada["precio_unitario"])
+
+                with st.container(border=True):
+                    st.markdown(
+                        f"""
+                        <div class="rv-cart-line">
+                            <div>
+                                <p class="rv-cart-name">{seguro(cobrada['nombre_producto'])}<span class="rv-promo-chip">{combinacion}</span></p>
+                                <p class="rv-cart-detail">{cobrada['cantidad']} cobradas · {gratis['cantidad']} gratis · {moneda(float(cobrada['precio_unitario']))}</p>
+                            </div>
+                            <p class="rv-cart-subtotal">{moneda(subtotal)}</p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    with st.popover("Editar promoción", use_container_width=True):
+                        with st.form(f"{prefijo}_promo_form_{grupo_id}"):
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                cobradas = st.number_input(
+                                    "Cobradas",
+                                    min_value=1,
+                                    value=int(cobrada["cantidad"]),
+                                    step=1,
+                                    key=f"{prefijo}_paid_{grupo_id}_{int(cobrada['cantidad'])}_{int(gratis['cantidad'])}_{float(cobrada['precio_unitario']):.2f}",
+                                )
+                            with c2:
+                                gratuitas = st.number_input(
+                                    "Gratis",
+                                    min_value=1,
+                                    value=int(gratis["cantidad"]),
+                                    step=1,
+                                    key=f"{prefijo}_free_{grupo_id}_{int(cobrada['cantidad'])}_{int(gratis['cantidad'])}_{float(cobrada['precio_unitario']):.2f}",
+                                )
+                            precio = st.number_input(
+                                "Precio cobrado",
+                                min_value=0.0,
+                                value=float(cobrada["precio_unitario"]),
+                                step=0.01,
+                                format="%.2f",
+                                key=f"{prefijo}_promo_price_{grupo_id}_{int(cobrada['cantidad'])}_{int(gratis['cantidad'])}_{float(cobrada['precio_unitario']):.2f}",
+                            )
+                            guardar = st.form_submit_button(
+                                "Guardar promoción",
+                                type="primary",
+                                use_container_width=True,
+                            )
+                            if guardar:
+                                cobrada["cantidad"] = int(cobradas)
+                                cobrada["precio_unitario"] = float(precio)
+                                gratis["cantidad"] = int(gratuitas)
+                                gratis["precio_unitario"] = 0.0
+                                st.rerun()
+
+                        if st.button(
+                            "Eliminar promoción",
+                            key=f"{prefijo}_delete_group_{grupo_id}",
+                            use_container_width=True,
+                        ):
+                            eliminar_promocion(grupo_id)
+                            st.rerun()
+
+    lineas, unidades, gratis, total = totales_carrito()
+    st.markdown(
+        f"""
+        <div class="rv-total-box">
+            <p class="rv-total-label">Total estimado</p>
+            <p class="rv-total-value">{moneda(total)}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(f"{lineas} líneas · {unidades} unidades · {gratis} gratis")
+
+    clave_nota = f"{prefijo}_nota_pedido"
+    if clave_nota not in st.session_state:
+        st.session_state[clave_nota] = str(
+            st.session_state.get("nota_pedido", "")
+        )
+
+    with st.expander("Notas del pedido"):
+        st.text_area(
+            "Notas generales",
+            placeholder="Instrucciones de entrega...",
+            max_chars=700,
+            key=clave_nota,
+            on_change=sincronizar_nota_pedido,
+            args=(prefijo,),
+        )
+
+    if mostrar_envio:
+        listo = bool(st.session_state.cliente_id and st.session_state.carrito)
+        if not st.session_state.cliente_id:
+            st.info("Selecciona el cliente para crear el pedido.")
+
+        if st.button(
+            "Crear pedido en Odoo",
+            type="primary",
+            use_container_width=True,
+            disabled=not listo,
+            key=f"{prefijo}_enviar",
+        ):
+            st.session_state.enviar_pedido = True
+            st.rerun()
 
 
 # =============================================================================
-# RESULTADO DEL PEDIDO
+# DIÁLOGOS
 # =============================================================================
 
 
-if st.session_state.get("mostrar_balloons"):
+@st.dialog("Agregar promoción", on_dismiss="rerun")
+def dialogo_promocion(producto_id: int) -> None:
+    producto = productos_por_id[int(producto_id)]
+    nombre = str(producto.get("name") or "Producto")
+    codigo = str(producto.get("default_code") or "S/C")
+    precio_lista = float(producto.get("list_price") or 0.0)
+
+    st.markdown(f"### {seguro(nombre)}")
+    st.caption(f"{codigo} · Precio de lista {moneda(precio_lista)}")
+
+    preset = st.radio(
+        "Promoción",
+        PROMOCIONES_RAPIDAS,
+        horizontal=True,
+        key=f"promo_preset_{producto_id}",
+    )
+
+    if preset == "Otra":
+        valor_cobradas, valor_gratis = 1, 1
+    else:
+        parte_1, parte_2 = preset.split("+")
+        valor_cobradas, valor_gratis = int(parte_1), int(parte_2)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        cobradas = st.number_input(
+            "Cobradas",
+            min_value=1,
+            value=valor_cobradas,
+            step=1,
+            key=f"promo_paid_{producto_id}_{preset}",
+        )
+    with c2:
+        gratis = st.number_input(
+            "Gratis",
+            min_value=1,
+            value=valor_gratis,
+            step=1,
+            key=f"promo_free_{producto_id}_{preset}",
+        )
+
+    precio = st.number_input(
+        "Precio unitario cobrado",
+        min_value=0.0,
+        value=precio_lista,
+        step=0.01,
+        format="%.2f",
+        key=f"promo_price_{producto_id}",
+    )
+
+    combinacion = f"{int(cobradas)}+{int(gratis)}"
+    st.info(
+        f"Se crearán 2 líneas: {int(cobradas)} con precio y "
+        f"{int(gratis)} a $0.00."
+    )
+
+    if st.button(
+        f"Agregar promoción {combinacion}",
+        type="primary",
+        use_container_width=True,
+        key=f"promo_add_{producto_id}_{combinacion}",
+    ):
+        agregar_promocion(producto, int(cobradas), int(gratis), float(precio))
+        registrar_reciente(int(producto_id))
+        st.session_state.producto_promocion_id = None
+        limpiar_busqueda_catalogo()
+        st.session_state.notificacion_pendiente = {
+            "texto": f"Promoción {combinacion} de {nombre} agregada",
+            "icono": "🎁",
+        }
+        st.rerun()
+
+
+@st.dialog("Carrito", width="large")
+def dialogo_carrito_movil() -> None:
+    render_carrito("mobile", mostrar_vaciar=True, mostrar_envio=False)
+
+
+# =============================================================================
+# PANTALLA DE RESULTADO
+# =============================================================================
+
+if st.session_state.mostrar_balloons:
     st.balloons()
     st.session_state.mostrar_balloons = False
 
-resultado = st.session_state.get("resultado_pedido")
-
+resultado = st.session_state.resultado_pedido
 if resultado:
     with st.container(border=True):
         st.success(f"✅ {resultado['estado']} correctamente en Odoo")
-        st.markdown(f"## {texto_seguro(resultado['folio'])}")
-        st.markdown(f"**Cliente:** {texto_seguro(resultado['cliente'])}")
+        st.markdown(f"## {seguro(resultado['folio'])}")
+        st.markdown(f"**Cliente:** {seguro(resultado['cliente'])}")
 
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("Líneas", resultado["lineas"])
-        r2.metric("Unidades", resultado["unidades"])
-        r3.metric("Bonificadas", resultado["unidades_gratis"])
-        r4.metric("Total", moneda(resultado["total"]))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Líneas", resultado["lineas"])
+        c2.metric("Unidades", resultado["unidades"])
+        c3.metric("Total", moneda(resultado["total"]))
 
-        st.caption(
-            "El total final puede variar si Odoo aplica impuestos, "
-            "redondeos o reglas fiscales adicionales."
+        st.markdown("### Compartir pedido")
+        st.link_button(
+            "🟢 Abrir WhatsApp",
+            resultado["enlace_whatsapp"],
+            type="primary",
+            use_container_width=True,
         )
 
-        st.divider()
-        st.markdown("### 📲 Compartir en WhatsApp")
-        st.caption(
-            "Abre WhatsApp, selecciona el grupo de pedidos y envía el texto."
-        )
-
-        enlace_whatsapp = str(resultado.get("enlace_whatsapp") or "")
-        texto_whatsapp = str(resultado.get("texto_whatsapp") or "")
-
-        if enlace_whatsapp:
-            st.link_button(
-                "🟢 Abrir WhatsApp",
-                enlace_whatsapp,
-                type="primary",
-                use_container_width=True,
+        with st.expander("Ver o copiar mensaje"):
+            st.text_area(
+                "Mensaje",
+                value=resultado["texto_whatsapp"],
+                height=240,
+                key=f"resultado_texto_{resultado['folio']}",
             )
 
-        with st.expander("Ver o copiar el mensaje", expanded=False):
-            st.code(texto_whatsapp, language=None)
-
-        st.button(
+        if st.button(
             "➕ Capturar otro pedido",
+            type="primary",
             use_container_width=True,
-            on_click=reiniciar_pedido,
-        )
+        ):
+            reiniciar_pedido()
+            st.rerun()
 
     st.stop()
 
 
 # =============================================================================
-# ESTADO Y NAVEGACIÓN VISUAL
+# ENCABEZADO, CLIENTE Y VISTAS ADAPTATIVAS
 # =============================================================================
 
 
-cliente_actual = st.session_state.get("cliente_id")
-cliente_nombre = "Sin seleccionar"
-if cliente_actual:
-    cliente_nombre = str(
-        clientes_por_id[int(cliente_actual)].get("name") or "Cliente"
-    )
 
-cantidad_lineas = len(st.session_state.carrito)
+def render_desktop_clasico() -> None:
+    """Renderiza la interfaz de escritorio basada en el diseño clásico.
 
-st.markdown(
-    f"""
-    <div class="rv-status-strip">
-        <div class="rv-status-item">
-            <p class="rv-status-label">Conexión</p>
-            <p class="rv-status-value">● Odoo conectado</p>
-        </div>
-        <div class="rv-status-item">
-            <p class="rv-status-label">Cliente</p>
-            <p class="rv-status-value">{texto_seguro(cliente_nombre)}</p>
-        </div>
-        <div class="rv-status-item">
-            <p class="rv-status-label">Carrito</p>
-            <p class="rv-status-value">{cantidad_lineas} líneas</p>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    Comparte carrito, cliente, conexión y envío con la interfaz móvil. Solo
+    cambia la presentación y el flujo de captura.
+    """
 
-paso_1 = "rv-step-done" if cliente_actual else "rv-step-active"
-paso_2 = (
-    "rv-step-done"
-    if st.session_state.carrito
-    else ("rv-step-active" if cliente_actual else "")
-)
-paso_3 = "rv-step-active" if cliente_actual and st.session_state.carrito else ""
-
-st.markdown(
-    f"""
-    <div class="rv-steps">
-        <div class="rv-step {paso_1}">
-            <span class="rv-step-number">1</span>
-            Seleccionar cliente
-        </div>
-        <div class="rv-step {paso_2}">
-            <span class="rv-step-number">2</span>
-            Agregar productos
-        </div>
-        <div class="rv-step {paso_3}">
-            <span class="rv-step-number">3</span>
-            Revisar y enviar
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# =============================================================================
-# CLIENTE Y AGREGADOR DE PRODUCTOS
-# =============================================================================
-
-
-col_cliente, col_producto = st.columns([.85, 1.15], gap="large")
-
-with col_cliente:
-    with st.container(border=True):
-        st.markdown(
-            '<p class="rv-section-title">👤 Cliente</p>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<p class="rv-section-copy">Busca por nombre o ciudad.</p>',
-            unsafe_allow_html=True,
+    lineas, unidades, gratis, total = totales_carrito()
+    cliente_id_actual = st.session_state.get("cliente_id")
+    cliente_nombre = "Sin seleccionar"
+    if cliente_id_actual:
+        cliente_nombre = str(
+            clientes_por_id[int(cliente_id_actual)].get("name") or "Cliente"
         )
 
-        cliente_id = st.selectbox(
-            "Selecciona el cliente",
-            options=list(clientes_por_id.keys()),
-            index=None,
-            placeholder="Escribe para buscar...",
-            format_func=etiqueta_cliente,
-            key="cliente_id",
-        )
-
-        if cliente_id:
-            cliente = clientes_por_id[int(cliente_id)]
-            detalles = []
-
-            if cliente.get("city"):
-                detalles.append(f"📍 {cliente['city']}")
-            if cliente.get("vat"):
-                detalles.append(f"RFC: {cliente['vat']}")
-            if cliente.get("phone"):
-                detalles.append(f"📞 {cliente['phone']}")
-            if cliente.get("email"):
-                detalles.append(f"✉️ {cliente['email']}")
-
-            if detalles:
-                st.caption(" · ".join(detalles))
-
-        st.divider()
-
-        if st.button(
-            "↻ Actualizar clientes y productos",
-            use_container_width=True,
-        ):
-            cargar_datos_odoo.clear()
-            st.rerun()
-
-with col_producto:
-    with st.container(border=True):
-        st.markdown(
-            '<p class="rv-section-title">➕ Agregar producto</p>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<p class="rv-section-copy">'
-            "Puedes repetir el mismo producto y editar cada precio."
-            "</p>",
-            unsafe_allow_html=True,
-        )
-
-        producto_id = st.selectbox(
-            "Buscar producto",
-            options=list(productos_por_id.keys()),
-            index=None,
-            placeholder="Código o nombre del producto...",
-            format_func=etiqueta_producto,
-            key="producto_id",
-            on_change=sincronizar_producto_seleccionado,
-        )
-
-        producto_seleccionado: dict[str, Any] | None = None
-
-        if producto_id is not None:
-            producto_seleccionado = productos_por_id[int(producto_id)]
-            precio_lista = float(producto_seleccionado.get("list_price") or 0.0)
-
-            if st.session_state.ultimo_producto_id != int(producto_id):
-                sincronizar_producto_seleccionado()
-
-            st.markdown(
-                f"""
-                <div class="rv-product-preview">
-                    <p class="rv-product-name">
-                        {texto_seguro(producto_seleccionado.get('name'))}
-                    </p>
-                    <p class="rv-product-meta">
-                        Código {texto_seguro(producto_seleccionado.get('default_code') or 'S/C')}
-                        · Precio de lista {moneda(precio_lista)}
-                    </p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        producto_valido = producto_seleccionado is not None
-        tab_venta, tab_promocion = st.tabs(
-            ["🧾 Venta normal", "🎁 Promoción"]
-        )
-
-        with tab_venta:
-            venta_col1, venta_col2 = st.columns(2)
-
-            with venta_col1:
-                cantidad_normal = st.number_input(
-                    "Cantidad",
-                    min_value=1,
-                    step=1,
-                    key="cantidad_normal",
-                )
-
-            with venta_col2:
-                precio_normal = st.number_input(
-                    "Precio unitario",
-                    min_value=0.0,
-                    step=0.01,
-                    format="%.2f",
-                    key="precio_normal",
-                )
-
-            subtotal_normal = int(cantidad_normal) * float(precio_normal)
-            st.caption(f"Subtotal de esta línea: {moneda(subtotal_normal)}")
-
-            if st.button(
-                "Agregar venta al carrito",
-                type="primary",
-                use_container_width=True,
-                disabled=not producto_valido,
-                key="agregar_venta",
-            ):
-                if producto_seleccionado:
-                    agregar_linea_normal(
-                        producto=producto_seleccionado,
-                        cantidad=int(cantidad_normal),
-                        precio_unitario=float(precio_normal),
-                    )
-                    st.session_state.limpiar_selector_producto = True
-                    st.session_state.notificacion_temporal = {
-                        "mensaje": (
-                            f"{producto_seleccionado.get('name', 'Producto')} "
-                            "agregado al carrito"
-                        ),
-                        "icono": "✅",
-                    }
-                    st.rerun()
-
-        with tab_promocion:
-            preset = st.selectbox(
-                "Promoción rápida",
-                options=PROMOCIONES_RAPIDAS,
-                key="preset_promocion",
-                on_change=aplicar_preset_promocion,
-                help=(
-                    "Selecciona una combinación frecuente o elige "
-                    "Personalizada y escribe las cantidades."
-                ),
-            )
-
-            promo_col1, promo_col2 = st.columns(2)
-
-            with promo_col1:
-                cantidad_cobrada = st.number_input(
-                    "Unidades cobradas",
-                    min_value=1,
-                    step=1,
-                    key="cantidad_cobrada",
-                    help="Cantidad que tendrá precio.",
-                )
-
-            with promo_col2:
-                cantidad_gratis = st.number_input(
-                    "Unidades gratis",
-                    min_value=1,
-                    step=1,
-                    key="cantidad_gratis",
-                    help="Cantidad que se enviará a $0.00.",
-                )
-
-            precio_promocion = st.number_input(
-                "Precio unitario de la parte cobrada",
-                min_value=0.0,
-                step=0.01,
-                format="%.2f",
-                key="precio_promocion",
-            )
-
-            combinacion = f"{int(cantidad_cobrada)}+{int(cantidad_gratis)}"
-            total_entregado = int(cantidad_cobrada) + int(cantidad_gratis)
-            subtotal_promocion = int(cantidad_cobrada) * float(precio_promocion)
-
-            st.markdown(
-                f"""
-                <div class="rv-promo-preview">
-                    <p><strong>Promoción {combinacion}</strong></p>
-                    <p>
-                        Línea cobrada: {int(cantidad_cobrada)} ×
-                        {moneda(float(precio_promocion))}
-                    </p>
-                    <p>
-                        Línea gratis: {int(cantidad_gratis)} × $0.00
-                    </p>
-                    <p>
-                        Entregas {total_entregado} unidades ·
-                        Total {moneda(subtotal_promocion)}
-                    </p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            if st.button(
-                f"Agregar {combinacion} como dos líneas",
-                type="primary",
-                use_container_width=True,
-                disabled=not producto_valido,
-                key="agregar_promocion",
-            ):
-                if producto_seleccionado:
-                    agregar_promocion(
-                        producto=producto_seleccionado,
-                        cantidad_cobrada=int(cantidad_cobrada),
-                        cantidad_gratis=int(cantidad_gratis),
-                        precio_unitario=float(precio_promocion),
-                    )
-                    st.session_state.limpiar_selector_producto = True
-                    st.session_state.notificacion_temporal = {
-                        "mensaje": (
-                            f"Promoción {combinacion} de "
-                            f"{producto_seleccionado.get('name', 'producto')} agregada"
-                        ),
-                        "icono": "🎁",
-                    }
-                    st.rerun()
-
-
-# =============================================================================
-# CARRITO VISUAL COMPACTO
-# =============================================================================
-
-
-sincronizar_carrito_desde_widgets()
-elementos_carrito = elementos_visuales_carrito()
-total_actual_carrito = sum(
-    int(linea["cantidad"]) * float(linea["precio_unitario"])
-    for linea in st.session_state.carrito
-)
-
-cabecera_col, total_col, vaciar_col = st.columns([4.6, 1.3, 1.25])
-
-with cabecera_col:
-    st.markdown(
-        f"""
-        <div class="rv-cart-heading">
-            <h2 style="margin:0;font-size:1.35rem;">🛒 Productos agregados</h2>
-            <span class="rv-cart-count">
-                {len(elementos_carrito)} productos · {len(st.session_state.carrito)} líneas
-            </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with total_col:
-    st.markdown(
-        f'<div style="margin-top:1.15rem;" class="rv-cart-total-chip">'
-        f'Total {moneda(total_actual_carrito)}</div>',
-        unsafe_allow_html=True,
-    )
-
-with vaciar_col:
-    st.button(
-        "Vaciar",
-        use_container_width=True,
-        disabled=not bool(st.session_state.carrito),
-        on_click=vaciar_carrito,
-        help="Eliminar todos los productos del carrito.",
-    )
-
-
-if not st.session_state.carrito:
     st.markdown(
         """
-        <div class="rv-empty">
-            <div class="rv-empty-icon">🛒</div>
-            <div class="rv-empty-title">Aún no hay productos</div>
-            <div class="rv-empty-copy">
-                Elige un producto y agrégalo. Después de agregarlo, el selector
-                se limpiará automáticamente para evitar capturas duplicadas.
+        <div class="rv-classic-hero">
+            <div class="rv-classic-hero-grid">
+                <div>
+                    <p class="rv-classic-kicker">Captura de pedidos</p>
+                    <h1 class="rv-classic-title">🐾 RapyVet Pedidos</h1>
+                    <p class="rv-classic-subtitle">
+                        Interfaz de escritorio: selecciona el cliente, agrega
+                        ventas o promociones y revisa el pedido antes de enviarlo.
+                    </p>
+                </div>
+            </div>
+            <div class="rv-classic-pills">
+                <span class="rv-classic-pill">Precios editables</span>
+                <span class="rv-classic-pill">Promociones en dos líneas</span>
+                <span class="rv-classic-pill">Productos repetidos</span>
+                <span class="rv-classic-pill">WhatsApp al finalizar</span>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-else:
-    for numero_item, (tipo_elemento, lineas) in enumerate(
-        elementos_carrito,
-        start=1,
-    ):
-        if tipo_elemento == "linea":
-            linea = lineas[0]
-            linea_id = str(linea["linea_id"])
-            clave_cantidad = f"cantidad_{linea_id}"
-            clave_precio = f"precio_{linea_id}"
-
-            st.session_state.setdefault(clave_cantidad, int(linea["cantidad"]))
-            st.session_state.setdefault(
-                clave_precio,
-                float(linea["precio_unitario"]),
-            )
-
-            cantidad_actual = int(st.session_state[clave_cantidad])
-            precio_actual = float(st.session_state[clave_precio])
-            subtotal_actual = cantidad_actual * precio_actual
-            es_gratis = precio_actual == 0.0
-            badge = "Gratis" if es_gratis else "Venta"
-            clase_badge = (
-                "rv-inline-badge rv-inline-badge-free"
-                if es_gratis
-                else "rv-inline-badge"
-            )
-
-            # Sincroniza el modelo antes de calcular el resumen general.
-            linea["cantidad"] = cantidad_actual
-            linea["precio_unitario"] = precio_actual
-            linea["tipo"] = "gratis" if es_gratis else "venta"
-
-            with st.container(border=True):
-                st.markdown(
-                    f"""
-                    <div class="rv-compact-item">
-                        <div class="rv-compact-main">
-                            <div class="rv-compact-top">
-                                <span class="rv-item-number">{numero_item}</span>
-                                <p class="rv-compact-name">
-                                    {texto_seguro(linea['nombre_producto'])}
-                                </p>
-                                <span class="{clase_badge}">{badge}</span>
-                            </div>
-                            <p class="rv-compact-detail">
-                                {cantidad_actual} × {moneda(precio_actual)} ·
-                                Código {texto_seguro(linea['codigo'])}
-                            </p>
-                        </div>
-                        <div class="rv-compact-total">
-                            <p class="rv-compact-total-label">Subtotal</p>
-                            <p class="rv-compact-total-value">
-                                {moneda(subtotal_actual)}
-                            </p>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                with st.expander("Editar producto", expanded=False):
-                    st.markdown(
-                        '<p class="rv-edit-note">'
-                        'Modifica solo cuando sea necesario.'
-                        '</p>',
-                        unsafe_allow_html=True,
-                    )
-
-                    edit_col1, edit_col2 = st.columns(2)
-                    with edit_col1:
-                        cantidad = st.number_input(
-                            "Cantidad",
-                            min_value=1,
-                            step=1,
-                            key=clave_cantidad,
-                        )
-                    with edit_col2:
-                        precio = st.number_input(
-                            "Precio unitario",
-                            min_value=0.0,
-                            step=0.01,
-                            format="%.2f",
-                            key=clave_precio,
-                        )
-
-                    linea["cantidad"] = int(cantidad)
-                    linea["precio_unitario"] = float(precio)
-                    linea["tipo"] = (
-                        "gratis" if float(precio) == 0.0 else "venta"
-                    )
-
-                    a1, a2, a3 = st.columns(3)
-                    with a1:
-                        st.button(
-                            "Duplicar",
-                            key=f"duplicar_{linea_id}",
-                            use_container_width=True,
-                            on_click=duplicar_linea,
-                            args=(linea_id,),
-                        )
-                    with a2:
-                        st.button(
-                            "Hacer gratis",
-                            key=f"gratis_{linea_id}",
-                            use_container_width=True,
-                            on_click=hacer_linea_gratis,
-                            args=(linea_id,),
-                        )
-                    with a3:
-                        st.button(
-                            "Eliminar",
-                            key=f"eliminar_{linea_id}",
-                            use_container_width=True,
-                            on_click=eliminar_linea,
-                            args=(linea_id,),
-                        )
-
-        else:
-            if len(lineas) != 2:
-                st.error("Se encontró una promoción incompleta en el carrito.")
-                continue
-
-            grupo_id = str(lineas[0]["grupo_promocion"])
-            cobrada = next(
-                (
-                    linea
-                    for linea in lineas
-                    if linea.get("parte_promocion") == "cobrada"
-                ),
-                lineas[0],
-            )
-            gratis = next(
-                (
-                    linea
-                    for linea in lineas
-                    if linea.get("parte_promocion") == "gratis"
-                ),
-                lineas[1],
-            )
-
-            id_cobrada = str(cobrada["linea_id"])
-            id_gratis = str(gratis["linea_id"])
-            key_cantidad_cobrada = f"cantidad_{id_cobrada}"
-            key_precio_cobrada = f"precio_{id_cobrada}"
-            key_cantidad_gratis = f"cantidad_{id_gratis}"
-
-            st.session_state.setdefault(
-                key_cantidad_cobrada,
-                int(cobrada["cantidad"]),
-            )
-            st.session_state.setdefault(
-                key_precio_cobrada,
-                float(cobrada["precio_unitario"]),
-            )
-            st.session_state.setdefault(
-                key_cantidad_gratis,
-                int(gratis["cantidad"]),
-            )
-
-            cantidad_cobrada_actual = int(
-                st.session_state[key_cantidad_cobrada]
-            )
-            cantidad_gratis_actual = int(
-                st.session_state[key_cantidad_gratis]
-            )
-            precio_cobrado_actual = float(
-                st.session_state[key_precio_cobrada]
-            )
-            combinacion_actual = (
-                f"{cantidad_cobrada_actual}+{cantidad_gratis_actual}"
-            )
-            subtotal_promocion_actual = (
-                cantidad_cobrada_actual * precio_cobrado_actual
-            )
-
-            cobrada["cantidad"] = cantidad_cobrada_actual
-            cobrada["precio_unitario"] = precio_cobrado_actual
-            gratis["cantidad"] = cantidad_gratis_actual
-            gratis["precio_unitario"] = 0.0
-
-            with st.container(border=True):
-                st.markdown(
-                    f"""
-                    <div class="rv-compact-item">
-                        <div class="rv-compact-main">
-                            <div class="rv-compact-top">
-                                <span class="rv-item-number">{numero_item}</span>
-                                <p class="rv-compact-name">
-                                    {texto_seguro(cobrada['nombre_producto'])}
-                                </p>
-                                <span class="rv-inline-badge rv-inline-badge-promo">
-                                    {combinacion_actual}
-                                </span>
-                            </div>
-                            <p class="rv-compact-detail">
-                                {cantidad_cobrada_actual} cobradas ×
-                                {moneda(precio_cobrado_actual)} ·
-                                {cantidad_gratis_actual} gratis
-                            </p>
-                        </div>
-                        <div class="rv-compact-total">
-                            <p class="rv-compact-total-label">Subtotal</p>
-                            <p class="rv-compact-total-value">
-                                {moneda(subtotal_promocion_actual)}
-                            </p>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                with st.expander(
-                    f"Editar promoción {combinacion_actual}",
-                    expanded=False,
-                ):
-                    st.markdown(
-                        '<p class="rv-edit-note">'
-                        'Odoo recibirá dos líneas: una cobrada y otra a $0.00.'
-                        '</p>',
-                        unsafe_allow_html=True,
-                    )
-
-                    promo_col1, promo_col2, promo_col3 = st.columns(3)
-                    with promo_col1:
-                        cantidad_cobrada_editada = st.number_input(
-                            "Unidades cobradas",
-                            min_value=1,
-                            step=1,
-                            key=key_cantidad_cobrada,
-                        )
-                    with promo_col2:
-                        precio_cobrado_editado = st.number_input(
-                            "Precio cobrado",
-                            min_value=0.0,
-                            step=0.01,
-                            format="%.2f",
-                            key=key_precio_cobrada,
-                        )
-                    with promo_col3:
-                        cantidad_gratis_editada = st.number_input(
-                            "Unidades gratis",
-                            min_value=1,
-                            step=1,
-                            key=key_cantidad_gratis,
-                        )
-
-                    cobrada["cantidad"] = int(cantidad_cobrada_editada)
-                    cobrada["precio_unitario"] = float(precio_cobrado_editado)
-                    gratis["cantidad"] = int(cantidad_gratis_editada)
-                    gratis["precio_unitario"] = 0.0
-
-                    ac1, ac2 = st.columns(2)
-                    with ac1:
-                        st.button(
-                            "Duplicar promoción",
-                            key=f"duplicar_grupo_{grupo_id}",
-                            use_container_width=True,
-                            on_click=duplicar_promocion,
-                            args=(grupo_id,),
-                        )
-                    with ac2:
-                        st.button(
-                            "Eliminar promoción",
-                            key=f"eliminar_grupo_{grupo_id}",
-                            use_container_width=True,
-                            on_click=eliminar_promocion,
-                            args=(grupo_id,),
-                        )
-
-
-# =============================================================================
-# RESUMEN Y ENVÍO
-# =============================================================================
-
-
-carrito = st.session_state.carrito
-
-total_lineas = len(carrito)
-total_unidades = sum(int(linea["cantidad"]) for linea in carrito)
-unidades_gratis = sum(
-    int(linea["cantidad"])
-    for linea in carrito
-    if float(linea["precio_unitario"]) == 0.0
-)
-total_pedido = sum(
-    int(linea["cantidad"]) * float(linea["precio_unitario"])
-    for linea in carrito
-)
-total_promociones = len(
-    {
-        linea.get("grupo_promocion")
-        for linea in carrito
-        if linea.get("grupo_promocion")
-    }
-)
-
-with st.container(border=True):
-    st.markdown(
-        '<p class="rv-section-title">🚀 Revisar y enviar</p>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<p class="rv-section-copy">'
-        "Confirma el cliente, las cantidades y los precios antes de crear la orden."
-        "</p>",
-        unsafe_allow_html=True,
-    )
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Líneas en Odoo", total_lineas)
-    m2.metric("Unidades", total_unidades)
-    m3.metric("Bonificadas", unidades_gratis)
-    m4.metric("Promociones", total_promociones)
 
     st.markdown(
         f"""
-        <div class="rv-summary-total">
-            <p class="rv-summary-total-label">Total estimado del pedido</p>
-            <p class="rv-summary-total-value">{moneda(total_pedido)}</p>
+        <div class="rv-classic-status-grid">
+            <div class="rv-classic-status-card">
+                <p class="rv-classic-status-label">Conexión</p>
+                <p class="rv-classic-status-value">● Odoo conectado</p>
+            </div>
+            <div class="rv-classic-status-card">
+                <p class="rv-classic-status-label">Cliente</p>
+                <p class="rv-classic-status-value">{seguro(cliente_nombre)}</p>
+            </div>
+            <div class="rv-classic-status-card">
+                <p class="rv-classic-status-label">Carrito</p>
+                <p class="rv-classic-status-value">
+                    {lineas} líneas · {unidades} unidades · {moneda(total)}
+                </p>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    nota = st.text_area(
-        "Notas generales del pedido",
-        placeholder="Instrucciones de entrega o información adicional...",
-        max_chars=700,
-        key="nota_pedido",
+    clase_1 = "done" if cliente_id_actual else "active"
+    clase_2 = (
+        "done"
+        if st.session_state.carrito
+        else ("active" if cliente_id_actual else "")
+    )
+    clase_3 = "active" if cliente_id_actual and st.session_state.carrito else ""
+
+    st.markdown(
+        f"""
+        <div class="rv-classic-steps">
+            <div class="rv-classic-step {clase_1}">
+                <span class="rv-classic-step-number">1</span>
+                Seleccionar cliente
+            </div>
+            <div class="rv-classic-step {clase_2}">
+                <span class="rv-classic-step-number">2</span>
+                Agregar productos
+            </div>
+            <div class="rv-classic-step {clase_3}">
+                <span class="rv-classic-step-number">3</span>
+                Revisar y enviar
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    cliente_elegido = st.session_state.get("cliente_id")
-    errores_carrito = validar_carrito(carrito) if carrito else []
-    listo_para_enviar = bool(
-        cliente_elegido
-        and carrito
-        and not errores_carrito
+    cliente_col, producto_col = st.columns([.82, 1.18], gap="large")
+
+    with cliente_col:
+        with st.container(border=True):
+            st.markdown(
+                '<p class="rv-classic-section-title">👤 Cliente</p>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<p class="rv-classic-section-copy">Busca por nombre o ciudad.</p>',
+                unsafe_allow_html=True,
+            )
+
+            cliente_id = st.selectbox(
+                "Selecciona el cliente",
+                options=list(clientes_por_id.keys()),
+                index=None,
+                placeholder="Escribe para buscar…",
+                format_func=etiqueta_cliente,
+                key="cliente_id",
+            )
+
+            if cliente_id:
+                cliente = clientes_por_id[int(cliente_id)]
+                detalles: list[str] = []
+                if cliente.get("city"):
+                    detalles.append(f"📍 {cliente['city']}")
+                if cliente.get("vat"):
+                    detalles.append(f"RFC: {cliente['vat']}")
+                if cliente.get("phone"):
+                    detalles.append(f"📞 {cliente['phone']}")
+                if cliente.get("email"):
+                    detalles.append(f"✉️ {cliente['email']}")
+                if detalles:
+                    st.caption(" · ".join(detalles))
+
+            st.divider()
+            if st.button(
+                "↻ Actualizar clientes y productos",
+                use_container_width=True,
+                key="desktop_classic_actualizar",
+            ):
+                cargar_datos_odoo.clear()
+                st.rerun()
+
+    with producto_col:
+        with st.container(border=True):
+            st.markdown(
+                '<p class="rv-classic-section-title">➕ Agregar producto</p>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                '<p class="rv-classic-section-copy">Busca un producto y elige venta normal o promoción.</p>',
+                unsafe_allow_html=True,
+            )
+
+            producto_id = st.selectbox(
+                "Buscar producto",
+                options=list(productos_por_id.keys()),
+                index=None,
+                placeholder="Código o nombre del producto…",
+                format_func=etiqueta_producto_desktop,
+                key="desktop_producto_id",
+                on_change=sincronizar_producto_desktop,
+            )
+
+            producto: dict[str, Any] | None = None
+            if producto_id is not None:
+                producto = productos_por_id[int(producto_id)]
+                if st.session_state.desktop_ultimo_producto_id != int(producto_id):
+                    sincronizar_producto_desktop()
+
+                precio_lista = float(producto.get("list_price") or 0.0)
+                st.markdown(
+                    f"""
+                    <div class="rv-classic-product-preview">
+                        <p class="rv-classic-product-name">
+                            {seguro(producto.get('name') or 'Producto')}
+                        </p>
+                        <p class="rv-classic-product-meta">
+                            Código {seguro(producto.get('default_code') or 'S/C')}
+                            · Precio de lista {moneda(precio_lista)}
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            producto_valido = producto is not None
+            tab_venta, tab_promocion = st.tabs(
+                ["🧾 Venta normal", "🎁 Promoción"]
+            )
+
+            with tab_venta:
+                cantidad_col, precio_col = st.columns(2)
+                with cantidad_col:
+                    cantidad_normal = st.number_input(
+                        "Cantidad",
+                        min_value=1,
+                        step=1,
+                        key="desktop_cantidad_normal",
+                    )
+                with precio_col:
+                    precio_normal = st.number_input(
+                        "Precio unitario",
+                        min_value=0.0,
+                        step=0.01,
+                        format="%.2f",
+                        key="desktop_precio_normal",
+                    )
+
+                subtotal = int(cantidad_normal) * float(precio_normal)
+                st.caption(f"Subtotal de esta línea: {moneda(subtotal)}")
+
+                if st.button(
+                    "Agregar venta al carrito",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not producto_valido,
+                    key="desktop_classic_agregar_venta",
+                ):
+                    agregar_venta_desktop(
+                        int(producto_id),
+                        int(cantidad_normal),
+                        float(precio_normal),
+                    )
+                    st.rerun()
+
+            with tab_promocion:
+                st.selectbox(
+                    "Promoción rápida",
+                    options=PROMOCIONES_RAPIDAS,
+                    key="desktop_preset_promocion",
+                    on_change=aplicar_preset_desktop,
+                )
+
+                cobradas_col, gratis_col = st.columns(2)
+                with cobradas_col:
+                    cantidad_cobrada = st.number_input(
+                        "Unidades cobradas",
+                        min_value=1,
+                        step=1,
+                        key="desktop_cantidad_cobrada",
+                    )
+                with gratis_col:
+                    cantidad_gratis = st.number_input(
+                        "Unidades gratis",
+                        min_value=1,
+                        step=1,
+                        key="desktop_cantidad_gratis",
+                    )
+
+                precio_promocion = st.number_input(
+                    "Precio unitario de la parte cobrada",
+                    min_value=0.0,
+                    step=0.01,
+                    format="%.2f",
+                    key="desktop_precio_promocion",
+                )
+
+                combinacion = f"{int(cantidad_cobrada)}+{int(cantidad_gratis)}"
+                subtotal_promocion = (
+                    int(cantidad_cobrada) * float(precio_promocion)
+                )
+                st.markdown(
+                    f"""
+                    <div class="rv-classic-promo-preview">
+                        <strong>Promoción {combinacion}</strong><br>
+                        {int(cantidad_cobrada)} cobradas × {moneda(float(precio_promocion))}<br>
+                        {int(cantidad_gratis)} gratis × $0.00<br>
+                        Total de la promoción: <strong>{moneda(subtotal_promocion)}</strong>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                if st.button(
+                    f"Agregar promoción {combinacion}",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not producto_valido,
+                    key="desktop_classic_agregar_promocion",
+                ):
+                    agregar_promocion_desktop(
+                        int(producto_id),
+                        int(cantidad_cobrada),
+                        int(cantidad_gratis),
+                        float(precio_promocion),
+                    )
+                    st.rerun()
+
+    elementos = elementos_carrito()
+    st.markdown(
+        f"""
+        <div class="rv-classic-cart-head">
+            <h2 class="rv-classic-cart-title">🛒 Productos agregados</h2>
+            <span class="rv-classic-cart-chip">
+                {len(elementos)} productos · {lineas} líneas · {moneda(total)}
+            </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    render_carrito(
+        "desktop_classic",
+        mostrar_vaciar=True,
+        mostrar_envio=True,
     )
 
-    if not cliente_elegido:
-        st.info("Selecciona un cliente para poder enviar el pedido.")
-    elif not carrito:
-        st.info("Agrega al menos un producto al carrito.")
-    elif errores_carrito:
-        st.warning("Corrige el carrito antes de enviar el pedido:")
-        for error in errores_carrito:
-            st.write(f"• {error}")
 
-    enviar = st.button(
-        "🚀 Crear pedido en Odoo",
-        type="primary",
-        use_container_width=True,
-        disabled=not listo_para_enviar,
+def render_encabezado() -> None:
+    _, unidades, _, total_actual = totales_carrito()
+
+    if ES_MOVIL:
+        st.markdown(
+            f"""
+            <div class="rv-mobile-appbar">
+                <div class="rv-brand">
+                    <div class="rv-brand-icon">🐾</div>
+                    <div>
+                        <p class="rv-brand-title">RapyVet POS</p>
+                        <p class="rv-brand-copy">Pedidos rápidos</p>
+                    </div>
+                </div>
+                <div class="rv-mobile-status">
+                    <span class="rv-pill"><span class="rv-online-dot"></span>Odoo</span>
+                    <span class="rv-pill">{unidades} uds.</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.markdown(
+        f"""
+        <div class="rv-topbar">
+            <div class="rv-brand">
+                <div class="rv-brand-icon">🐾</div>
+                <div>
+                    <p class="rv-brand-title">RapyVet POS</p>
+                    <p class="rv-brand-copy">Captura rápida conectada con Odoo</p>
+                </div>
+            </div>
+            <div class="rv-top-stats">
+                <span class="rv-pill">● Odoo</span>
+                <span class="rv-pill">🛒 {len(elementos_carrito())}</span>
+                <span class="rv-pill">{moneda(total_actual)}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
-if enviar:
-    with st.spinner("Creando el pedido en Odoo..."):
-        try:
-            _, folio, estado = crear_pedido_odoo(
-                uid=uid,
-                cliente_id=int(st.session_state.cliente_id),
-                carrito=st.session_state.carrito,
-                nota=nota,
+def render_cliente() -> None:
+    if ES_MOVIL:
+        with st.container(border=True, key="rv_mobile_client_card"):
+            st.markdown(
+                '<p class="rv-mobile-client-label">Cliente del pedido</p>',
+                unsafe_allow_html=True,
+            )
+            selector_col, acciones_col = st.columns([6, 1], gap="small")
+            with selector_col:
+                st.selectbox(
+                    "Cliente del pedido",
+                    options=list(clientes_por_id.keys()),
+                    index=None,
+                    placeholder="Buscar cliente por nombre o ciudad…",
+                    format_func=etiqueta_cliente,
+                    key="cliente_id",
+                    label_visibility="collapsed",
+                )
+            with acciones_col:
+                if st.button(
+                    "↻",
+                    help="Actualizar clientes y productos",
+                    use_container_width=True,
+                    key="actualizar_odoo_mobile",
+                ):
+                    cargar_datos_odoo.clear()
+                    st.rerun()
+        return
+
+    with st.container(border=True):
+        cliente_col, actualizar_col = st.columns([5, 1])
+        with cliente_col:
+            st.selectbox(
+                "Cliente del pedido",
+                options=list(clientes_por_id.keys()),
+                index=None,
+                placeholder="Buscar cliente por nombre o ciudad…",
+                format_func=etiqueta_cliente,
+                key="cliente_id",
+            )
+        with actualizar_col:
+            st.markdown("<div style='height:.08rem'></div>", unsafe_allow_html=True)
+            if st.button(
+                "↻",
+                help="Actualizar datos de Odoo",
+                use_container_width=True,
+                key="actualizar_odoo_desktop",
+            ):
+                cargar_datos_odoo.clear()
+                st.rerun()
+
+
+def render_catalogo(*, movil: bool) -> None:
+    if movil:
+        st.markdown('<p class="rv-mobile-page-title">Productos</p>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="rv-mobile-page-copy">Busca y toca <b>Agregar</b>. Usa 🎁 solo cuando el producto lleve promoción.</p>',
+            unsafe_allow_html=True,
+        )
+        catalog_context = st.container()
+    else:
+        catalog_context = st.container(border=True)
+
+    with catalog_context:
+        if not movil:
+            st.markdown('<p class="rv-section-title">Productos</p>', unsafe_allow_html=True)
+            st.markdown(
+                '<p class="rv-section-copy">“+ Agregar” suma una unidad. Usa 🎁 para promociones.</p>',
+                unsafe_allow_html=True,
             )
 
-            cliente = clientes_por_id[int(st.session_state.cliente_id)]
-            nombre_cliente = str(cliente.get("name") or "Cliente")
-
-            # Copiamos las líneas antes de cambiar de pantalla para conservar
-            # exactamente lo que se envió a Odoo.
-            carrito_enviado = [
-                dict(linea)
-                for linea in st.session_state.carrito
-            ]
-
-            texto_whatsapp = construir_mensaje_whatsapp(
-                nombre_cliente=nombre_cliente,
-                carrito=carrito_enviado,
+        search_context = (
+            st.container(key="rv_mobile_search_area")
+            if movil
+            else st.container()
+        )
+        with search_context:
+            busqueda_actual = st_keyup(
+                "Buscar producto",
+                value=str(st.session_state.busqueda_pos or ""),
+                placeholder="Buscar por nombre o código…",
+                key=(
+                    "busqueda_pos_input_"
+                    f"{st.session_state.busqueda_widget_version}"
+                ),
+                debounce=160,
             )
 
-            st.session_state.resultado_pedido = {
-                "folio": folio,
-                "estado": estado,
-                "cliente": nombre_cliente,
-                "lineas": total_lineas,
-                "unidades": total_unidades,
-                "unidades_gratis": unidades_gratis,
-                "total": total_pedido,
-                "texto_whatsapp": texto_whatsapp,
-                "enlace_whatsapp": crear_enlace_whatsapp(texto_whatsapp),
-            }
-            st.session_state.mostrar_balloons = True
-            st.rerun()
+            busqueda_actual = str(busqueda_actual or "")
+            if busqueda_actual != str(st.session_state.busqueda_pos or ""):
+                st.session_state.busqueda_pos = busqueda_actual
+                resetear_catalogo()
 
-        except xmlrpc.client.Fault as error:
-            st.error(
-                "Odoo rechazó el pedido. Revisa los datos y vuelve a intentarlo."
+            categorias = sorted(
+                {categoria_producto(p) for p in productos_por_id.values()}
             )
-            with st.expander("Ver detalle técnico"):
-                st.code(error.faultString)
-        except xmlrpc.client.ProtocolError as error:
-            st.error(
-                "Error de comunicación con Odoo. "
-                f"Código HTTP: {error.errcode}"
+
+            if movil:
+                st.segmented_control(
+                    "Vista",
+                    options=["Todos", "Recientes"],
+                    key="vista_pos",
+                    on_change=resetear_catalogo,
+                    label_visibility="collapsed",
+                    width="stretch",
+                    required=True,
+                )
+                st.selectbox(
+                    "Categoría",
+                    options=["Todas", *categorias],
+                    key="categoria_pos",
+                    on_change=resetear_catalogo,
+                    label_visibility="collapsed",
+                )
+            else:
+                filtro_col, vista_col = st.columns([1.2, 1])
+                with filtro_col:
+                    st.selectbox(
+                        "Categoría",
+                        options=["Todas", *categorias],
+                        key="categoria_pos",
+                        on_change=resetear_catalogo,
+                    )
+                with vista_col:
+                    st.radio(
+                        "Vista",
+                        options=["Todos", "Recientes"],
+                        horizontal=True,
+                        key="vista_pos",
+                        on_change=resetear_catalogo,
+                    )
+
+        ids_filtrados = filtrar_productos()
+        productos_por_pagina = 6 if movil else PRODUCTOS_POR_PAGINA
+        columnas_catalogo = 1 if movil else COLUMNAS_CATALOGO
+        total_productos = len(ids_filtrados)
+        total_paginas = max(
+            1,
+            (total_productos + productos_por_pagina - 1) // productos_por_pagina,
+        )
+        pagina_actual = min(
+            max(0, int(st.session_state.pagina_catalogo)),
+            total_paginas - 1,
+        )
+        st.session_state.pagina_catalogo = pagina_actual
+
+        inicio = pagina_actual * productos_por_pagina
+        fin = min(inicio + productos_por_pagina, total_productos)
+        ids_visibles = ids_filtrados[inicio:fin]
+        texto_resultados = (
+            f"{inicio + 1}–{fin} de {total_productos}"
+            if total_productos
+            else "0 productos"
+        )
+        st.markdown(
+            f'<p class="rv-results">{texto_resultados}</p>',
+            unsafe_allow_html=True,
+        )
+
+        if st.session_state.vista_pos == "Recientes" and not ids_visibles:
+            st.markdown(
+                '<div class="rv-empty"><div class="rv-empty-icon">🕘</div><div class="rv-empty-title">Aún no hay productos recientes</div><div class="rv-empty-copy">Los productos que agregues aparecerán aquí.</div></div>',
+                unsafe_allow_html=True,
             )
-        except Exception as error:
-            st.error("No se pudo registrar el pedido en Odoo.")
-            with st.expander("Ver detalle técnico"):
-                st.code(str(error))
+        elif not ids_visibles:
+            st.markdown(
+                '<div class="rv-empty"><div class="rv-empty-icon">🔎</div><div class="rv-empty-title">Sin coincidencias</div><div class="rv-empty-copy">Prueba con otra palabra, código o categoría.</div></div>',
+                unsafe_allow_html=True,
+            )
+        elif movil:
+            for producto_id in ids_visibles:
+                producto = productos_por_id[producto_id]
+                codigo = str(producto.get("default_code") or "S/C")
+                nombre = str(producto.get("name") or "Producto")
+                precio = float(producto.get("list_price") or 0.0)
+
+                with st.container(
+                    border=True,
+                    key=f"rv_mobile_product_card_{producto_id}",
+                ):
+                    st.markdown(
+                        f"""
+                        <div class="rv-mobile-product-row">
+                            <p class="rv-product-code">{seguro(codigo)}</p>
+                            <p class="rv-product-name">{seguro(nombre)}</p>
+                            <p class="rv-product-price">{moneda(precio)}</p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    agregar_col, promo_col = st.columns([4, 1], gap="small")
+                    with agregar_col:
+                        st.button(
+                            "＋ Agregar",
+                            key=f"mobile_quick_add_{producto_id}",
+                            type="primary",
+                            use_container_width=True,
+                            on_click=agregar_venta_rapida,
+                            args=(producto_id,),
+                        )
+                    with promo_col:
+                        st.button(
+                            "🎁",
+                            key=f"mobile_promo_{producto_id}",
+                            help="Agregar promoción",
+                            use_container_width=True,
+                            on_click=abrir_promocion,
+                            args=(producto_id,),
+                        )
+        else:
+            for indice in range(0, len(ids_visibles), columnas_catalogo):
+                columnas = st.columns(columnas_catalogo, gap="small")
+                for desplazamiento, columna in enumerate(columnas):
+                    posicion = indice + desplazamiento
+                    if posicion >= len(ids_visibles):
+                        continue
+
+                    producto_id = ids_visibles[posicion]
+                    producto = productos_por_id[producto_id]
+                    codigo = str(producto.get("default_code") or "S/C")
+                    nombre = str(producto.get("name") or "Producto")
+                    precio = float(producto.get("list_price") or 0.0)
+
+                    with columna:
+                        with st.container(border=True):
+                            st.markdown(
+                                f"""
+                                <div class="rv-product-card">
+                                    <p class="rv-product-code">{seguro(codigo)}</p>
+                                    <p class="rv-product-name">{seguro(nombre)}</p>
+                                    <p class="rv-product-price">{moneda(precio)}</p>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                            agregar_col, promo_col = st.columns([3, 1])
+                            with agregar_col:
+                                st.button(
+                                    "+ Agregar",
+                                    key=f"desktop_quick_add_{producto_id}",
+                                    type="primary",
+                                    use_container_width=True,
+                                    on_click=agregar_venta_rapida,
+                                    args=(producto_id,),
+                                )
+                            with promo_col:
+                                st.button(
+                                    "🎁",
+                                    key=f"desktop_promo_{producto_id}",
+                                    help="Agregar promoción",
+                                    use_container_width=True,
+                                    on_click=abrir_promocion,
+                                    args=(producto_id,),
+                                )
+
+        if total_paginas > 1:
+            anterior_col, estado_col, siguiente_col = st.columns([1, 1.2, 1])
+            with anterior_col:
+                if st.button(
+                    "← Anterior" if movil else "←",
+                    help="Página anterior",
+                    use_container_width=True,
+                    disabled=pagina_actual == 0,
+                    key=f"{'mobile' if movil else 'desktop'}_catalogo_anterior",
+                ):
+                    st.session_state.pagina_catalogo = pagina_actual - 1
+                    st.rerun()
+            with estado_col:
+                st.markdown(
+                    f'<div class="rv-page-status">{pagina_actual + 1} de {total_paginas}</div>',
+                    unsafe_allow_html=True,
+                )
+            with siguiente_col:
+                if st.button(
+                    "Siguiente →" if movil else "→",
+                    help="Página siguiente",
+                    use_container_width=True,
+                    disabled=pagina_actual >= total_paginas - 1,
+                    key=f"{'mobile' if movil else 'desktop'}_catalogo_siguiente",
+                ):
+                    st.session_state.pagina_catalogo = pagina_actual + 1
+                    st.rerun()
+
+
+def render_carrito_panel(*, movil: bool) -> None:
+    if movil:
+        elementos = elementos_carrito()
+        st.markdown('<p class="rv-mobile-page-title">Carrito</p>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="rv-mobile-page-copy">Ajusta cantidades con − y +. El precio solo se abre cuando necesitas modificarlo.</p>',
+            unsafe_allow_html=True,
+        )
+
+        if elementos:
+            resumen_col, opciones_col = st.columns([5, 1], gap="small")
+            with resumen_col:
+                _, unidades, gratis, total = totales_carrito()
+                st.markdown(
+                    f"**{len(elementos)} productos · {unidades} unidades**  \n{gratis} gratis · {moneda(total)}",
+                )
+            with opciones_col:
+                with st.popover("⋯", use_container_width=True):
+                    if st.button(
+                        "Vaciar carrito",
+                        key="mobile_vaciar_menu",
+                        use_container_width=True,
+                    ):
+                        vaciar_carrito()
+                        st.rerun()
+
+        render_carrito(
+            "mobile",
+            mostrar_vaciar=False,
+            mostrar_envio=False,
+        )
+        return
+
+    with st.container(border=True):
+        st.markdown('<p class="rv-section-title">Carrito</p>', unsafe_allow_html=True)
+        st.markdown(
+            '<p class="rv-section-copy">Ajusta con − y +. Abre editar solo para cambiar el precio.</p>',
+            unsafe_allow_html=True,
+        )
+        render_carrito("desktop", mostrar_vaciar=True, mostrar_envio=True)
+
+
+def render_navegacion_movil() -> None:
+    elementos = elementos_carrito()
+    _, unidades, _, total = totales_carrito()
+    activo = str(st.session_state.mobile_tab)
+    listo = bool(st.session_state.cliente_id and st.session_state.carrito)
+
+    with st.bottom:
+        with st.container(key="rv_mobile_bottom_bar"):
+            if activo == "Carrito" and st.session_state.carrito:
+                total_col, enviar_col = st.columns([1.05, 1.65], gap="small")
+                with total_col:
+                    st.markdown(
+                        f"""
+                        <div class="rv-mobile-bottom-summary">
+                            <div>
+                                <p class="rv-mobile-bottom-copy">{unidades} unidades</p>
+                                <p class="rv-mobile-bottom-total">{moneda(total)}</p>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                with enviar_col:
+                    st.button(
+                        "Crear pedido",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=not listo,
+                        key="mobile_bottom_checkout",
+                        on_click=solicitar_envio,
+                    )
+            else:
+                st.markdown(
+                    f"""
+                    <div class="rv-mobile-bottom-summary">
+                        <p class="rv-mobile-bottom-copy">{unidades} unidades en el carrito</p>
+                        <p class="rv-mobile-bottom-total">{moneda(total)}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            productos_col, carrito_col = st.columns(2, gap="small")
+            with productos_col:
+                st.button(
+                    "🛍️ Productos",
+                    type="primary" if activo == "Productos" else "secondary",
+                    use_container_width=True,
+                    key="mobile_nav_productos",
+                    on_click=cambiar_tab_movil,
+                    args=("Productos",),
+                )
+            with carrito_col:
+                st.button(
+                    f"🛒 Carrito · {len(elementos)}",
+                    type="primary" if activo == "Carrito" else "secondary",
+                    use_container_width=True,
+                    key="mobile_nav_carrito",
+                    on_click=cambiar_tab_movil,
+                    args=("Carrito",),
+                )
+
+
+if ES_MOVIL:
+    # En teléfono se conserva íntegramente la experiencia mobile-first: una
+    # pantalla para Productos, otra para Carrito y navegación inferior fija.
+    render_encabezado()
+    render_cliente()
+    if st.session_state.mobile_tab == "Carrito":
+        render_carrito_panel(movil=True)
+    else:
+        render_catalogo(movil=True)
+    render_navegacion_movil()
+else:
+    # En escritorio se usa una interfaz totalmente distinta, basada en el
+    # diseño clásico proporcionado por el usuario. No se renderiza el catálogo
+    # POS móvil ni la barra inferior.
+    render_desktop_clasico()
+
+
+# Abre el diálogo de promoción una sola vez después de tocar el regalo.
+# La solicitud se consume antes de renderizar el diálogo para evitar que vuelva
+# a abrirse en futuros reruns al tocar cualquier otra parte de la aplicación.
+producto_promocion_pendiente = st.session_state.producto_promocion_id
+if producto_promocion_pendiente is not None:
+    st.session_state.producto_promocion_id = None
+    dialogo_promocion(int(producto_promocion_pendiente))
+
+
+# =============================================================================
+# ENVÍO
+# =============================================================================
+
+if st.session_state.enviar_pedido:
+    st.session_state.enviar_pedido = False
+
+    if not st.session_state.cliente_id or not st.session_state.carrito:
+        st.error("Selecciona un cliente y agrega productos antes de enviar.")
+    else:
+        with st.spinner("Creando el pedido en Odoo..."):
+            try:
+                _, folio, estado = crear_pedido_odoo(
+                    uid=uid,
+                    cliente_id=int(st.session_state.cliente_id),
+                    carrito=st.session_state.carrito,
+                    nota=st.session_state.nota_pedido,
+                )
+
+                cliente = clientes_por_id[int(st.session_state.cliente_id)]
+                nombre_cliente = str(cliente.get("name") or "Cliente")
+                carrito_enviado = [dict(linea) for linea in st.session_state.carrito]
+                lineas, unidades, gratis, total = totales_carrito()
+                texto_whatsapp = construir_mensaje_whatsapp(
+                    nombre_cliente,
+                    carrito_enviado,
+                )
+
+                st.session_state.resultado_pedido = {
+                    "folio": folio,
+                    "estado": estado,
+                    "cliente": nombre_cliente,
+                    "lineas": lineas,
+                    "unidades": unidades,
+                    "unidades_gratis": gratis,
+                    "total": total,
+                    "texto_whatsapp": texto_whatsapp,
+                    "enlace_whatsapp": crear_enlace_whatsapp(texto_whatsapp),
+                }
+                st.session_state.mostrar_balloons = True
+                st.rerun()
+
+            except xmlrpc.client.Fault as error:
+                st.error("Odoo rechazó el pedido. Revisa los datos e inténtalo nuevamente.")
+                with st.expander("Ver detalle técnico"):
+                    st.code(error.faultString)
+            except xmlrpc.client.ProtocolError as error:
+                st.error(f"Error de comunicación con Odoo. Código HTTP: {error.errcode}")
+            except Exception as error:
+                st.error(f"No se pudo crear el pedido: {error}")
