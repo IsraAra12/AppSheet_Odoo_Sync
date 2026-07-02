@@ -332,6 +332,18 @@ st.markdown(
             font-weight: 850;
         }
 
+        .rv-tax-note {
+            margin: .12rem 0 0;
+            color: var(--rv-primary) !important;
+            font-size: .62rem;
+            font-weight: 850;
+            line-height: 1.25;
+        }
+
+        .rv-tax-note-none {
+            color: var(--rv-muted) !important;
+        }
+
         .rv-mobile-page-title {
             margin: .1rem 0 .12rem;
             font-size: 1.25rem;
@@ -988,12 +1000,167 @@ URL, DB, USER, PASSWORD = obtener_configuracion()
 
 
 @st.cache_data(ttl=600, show_spinner=False)
+def calcular_impuestos_remoto(
+    url: str,
+    db: str,
+    uid: int,
+    password: str,
+    tax_ids: tuple[int, ...],
+    precio_odoo: float,
+) -> dict[str, Any]:
+    """Pide a Odoo el total incluido usando la configuración real del impuesto.
+
+    El valor recibido en ``precio_odoo`` sigue siendo el precio que Odoo espera
+    en ``sale.order.line.price_unit``. Si el impuesto está excluido, Odoo lo
+    suma; si está incluido, Odoo lo separa sin aumentar el total.
+    """
+
+    precio = max(0.0, float(precio_odoo))
+    ids = tuple(sorted({int(tax_id) for tax_id in tax_ids if int(tax_id) > 0}))
+
+    if not ids or precio == 0.0:
+        return {
+            "ok": True,
+            "total_excluded": precio,
+            "total_included": precio,
+            "tax_amount": 0.0,
+            "taxes": [],
+        }
+
+    try:
+        models = xmlrpc.client.ServerProxy(
+            f"{url}/xmlrpc/2/object",
+            allow_none=True,
+        )
+        resultado = models.execute_kw(
+            db,
+            int(uid),
+            password,
+            "account.tax",
+            "compute_all",
+            [list(ids), precio, False, 1.0, False, False],
+            {
+                "is_refund": False,
+                "handle_price_include": True,
+            },
+        )
+
+        total_excluded = float(resultado.get("total_excluded", precio))
+        total_included = float(resultado.get("total_included", precio))
+        return {
+            "ok": True,
+            "total_excluded": total_excluded,
+            "total_included": total_included,
+            "tax_amount": total_included - total_excluded,
+            "taxes": resultado.get("taxes", []),
+        }
+    except Exception as error:
+        # La interfaz no debe dejar de funcionar si el usuario de Odoo no tiene
+        # permiso de lectura sobre account.tax o si una instalación cambia la
+        # firma del método. El cálculo local de respaldo cubre los impuestos
+        # habituales (porcentaje, división y cantidad fija).
+        return {
+            "ok": False,
+            "error": str(error),
+            "total_excluded": precio,
+            "total_included": precio,
+            "tax_amount": 0.0,
+            "taxes": [],
+        }
+
+
+def _expandir_impuestos_locales(
+    tax_ids: list[int] | tuple[int, ...],
+    impuestos_por_id: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expande impuestos agrupados para el cálculo de respaldo."""
+
+    salida: list[dict[str, Any]] = []
+    vistos: set[int] = set()
+
+    def agregar(tax_id: int) -> None:
+        if tax_id in vistos:
+            return
+        vistos.add(tax_id)
+        impuesto = impuestos_por_id.get(int(tax_id))
+        if not impuesto:
+            return
+        if str(impuesto.get("amount_type") or "") == "group":
+            for child_id in impuesto.get("children_tax_ids") or []:
+                agregar(int(child_id))
+        else:
+            salida.append(impuesto)
+
+    for item in tax_ids:
+        agregar(int(item))
+
+    salida.sort(key=lambda tax: (int(tax.get("sequence") or 0), int(tax.get("id") or 0)))
+    return salida
+
+
+def calcular_impuestos_locales(
+    precio_odoo: float,
+    tax_ids: list[int] | tuple[int, ...],
+    impuestos_por_id: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    """Respaldo para impuestos estándar cuando compute_all no está disponible."""
+
+    precio = max(0.0, float(precio_odoo))
+    impuestos = _expandir_impuestos_locales(tax_ids, impuestos_por_id)
+
+    if not impuestos or precio == 0.0:
+        return {
+            "total_excluded": precio,
+            "total_included": precio,
+            "tax_amount": 0.0,
+        }
+
+    total = precio
+    base_actual = precio
+
+    for impuesto in impuestos:
+        # Si está incluido, el precio capturado ya contiene ese impuesto.
+        if bool(impuesto.get("price_include")):
+            continue
+
+        tipo = str(impuesto.get("amount_type") or "percent")
+        importe = float(impuesto.get("amount") or 0.0)
+
+        if tipo == "fixed":
+            monto_impuesto = importe
+        elif tipo == "division":
+            tasa = importe / 100.0
+            monto_impuesto = (
+                (base_actual / (1.0 - tasa)) - base_actual
+                if 0.0 <= tasa < 1.0
+                else 0.0
+            )
+        else:
+            monto_impuesto = base_actual * (importe / 100.0)
+
+        total += monto_impuesto
+        if bool(impuesto.get("include_base_amount")):
+            base_actual += monto_impuesto
+
+    return {
+        "total_excluded": precio,
+        "total_included": total,
+        "tax_amount": total - precio,
+    }
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def cargar_datos_odoo(
     url: str,
     db: str,
     usuario: str,
     password: str,
-) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[
+    int,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True)
     uid = common.authenticate(db, usuario, password, {})
 
@@ -1023,12 +1190,40 @@ def cargar_datos_odoo(
         "search_read",
         [[("sale_ok", "=", True), ("active", "=", True)]],
         {
-            "fields": ["id", "default_code", "name", "list_price", "categ_id"],
+            "fields": ["id", "default_code", "name", "list_price", "categ_id", "taxes_id"],
             "order": "default_code asc, name asc",
         },
     )
 
-    return int(uid), clientes, productos
+    try:
+        impuestos = models.execute_kw(
+            db,
+            uid,
+            password,
+            "account.tax",
+            "search_read",
+            [[("active", "=", True)]],
+            {
+                "fields": [
+                    "id",
+                    "name",
+                    "amount",
+                    "amount_type",
+                    "price_include",
+                    "sequence",
+                    "include_base_amount",
+                    "is_base_affected",
+                    "children_tax_ids",
+                ],
+                "order": "sequence asc, id asc",
+            },
+        )
+    except Exception:
+        # compute_all sigue siendo el cálculo principal. Esta lista solamente
+        # se usa como respaldo cuando el usuario no puede ejecutar ese método.
+        impuestos = []
+
+    return int(uid), clientes, productos, impuestos
 
 
 def crear_pedido_odoo(
@@ -1036,7 +1231,7 @@ def crear_pedido_odoo(
     cliente_id: int,
     carrito: list[dict[str, Any]],
     nota: str,
-) -> tuple[int, str, str]:
+) -> tuple[int, str, str, float, float, float]:
     models = xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/object", allow_none=True)
 
     lineas_odoo = [
@@ -1091,14 +1286,39 @@ def crear_pedido_odoo(
             "sale.order",
             "read",
             [[sale_order_id]],
-            {"fields": ["name", "state"]},
+            {
+                "fields": [
+                    "name",
+                    "state",
+                    "amount_untaxed",
+                    "amount_tax",
+                    "amount_total",
+                ]
+            },
         )
+
         if registro:
             folio = str(registro[0].get("name") or folio)
+            amount_untaxed = float(registro[0].get("amount_untaxed") or 0.0)
+            amount_tax = float(registro[0].get("amount_tax") or 0.0)
+            amount_total = float(registro[0].get("amount_total") or 0.0)
+        else:
+            amount_untaxed = 0.0
+            amount_tax = 0.0
+            amount_total = 0.0
     except Exception:
-        pass
+        amount_untaxed = 0.0
+        amount_tax = 0.0
+        amount_total = 0.0
 
-    return int(sale_order_id), folio, estado
+    return (
+        int(sale_order_id),
+        folio,
+        estado,
+        amount_untaxed,
+        amount_tax,
+        amount_total,
+    )
 
 
 # =============================================================================
@@ -1135,13 +1355,25 @@ def crear_linea(
     grupo_promocion: str | None = None,
     parte_promocion: str | None = None,
 ) -> dict[str, Any]:
+    precio_odoo = max(0.0, float(precio))
+    detalle = detalle_precio_producto(producto, precio_odoo)
+    precio_final = 0.0 if precio_odoo == 0.0 else float(detalle["precio_final"])
+
     return {
         "linea_id": uuid.uuid4().hex,
         "product_id": int(producto["id"]),
         "nombre_producto": str(producto.get("name") or "Producto"),
         "codigo": str(producto.get("default_code") or "S/C"),
         "cantidad": max(1, int(cantidad)),
-        "precio_unitario": max(0.0, float(precio)),
+        # price_unit real que se envía a Odoo.
+        "precio_unitario": precio_odoo,
+        # Precio que ve el vendedor, siempre con impuestos aplicados.
+        "precio_final_unitario": precio_final,
+        "impuestos_unitarios": (
+            0.0 if precio_odoo == 0.0 else float(detalle["impuestos"])
+        ),
+        "tiene_impuestos": bool(detalle["tiene_impuestos"]),
+        "texto_impuestos": str(detalle["texto_impuestos"]),
         "tipo": tipo,
         "grupo_promocion": grupo_promocion,
         "parte_promocion": parte_promocion,
@@ -1337,7 +1569,7 @@ def cambiar_tab_movil(destino: str) -> None:
 
 try:
     with st.spinner("Conectando con Odoo..."):
-        uid, lista_clientes, lista_productos = cargar_datos_odoo(URL, DB, USER, PASSWORD)
+        uid, lista_clientes, lista_productos, lista_impuestos = cargar_datos_odoo(URL, DB, USER, PASSWORD)
 except xmlrpc.client.Fault as error:
     st.error(f"Odoo devolvió un error: {error.faultString}")
     st.stop()
@@ -1347,6 +1579,7 @@ except Exception as error:
 
 clientes_por_id = {int(c["id"]): c for c in lista_clientes}
 productos_por_id = {int(p["id"]): p for p in lista_productos}
+impuestos_por_id = {int(t["id"]): t for t in lista_impuestos}
 
 if not clientes_por_id:
     st.warning("No se encontraron clientes activos en Odoo.")
@@ -1355,6 +1588,101 @@ if not clientes_por_id:
 if not productos_por_id:
     st.warning("No se encontraron productos disponibles para venta.")
     st.stop()
+
+
+def detalle_precio_producto(
+    producto: dict[str, Any],
+    precio_odoo: float | None = None,
+) -> dict[str, Any]:
+    """Devuelve precio final con impuestos sin alterar price_unit de Odoo."""
+
+    precio = max(
+        0.0,
+        float(
+            producto.get("list_price")
+            if precio_odoo is None
+            else precio_odoo
+        ),
+    )
+    tax_ids = tuple(int(x) for x in (producto.get("taxes_id") or []))
+    nombres = [
+        str(impuestos_por_id[tax_id].get("name") or "Impuesto")
+        for tax_id in tax_ids
+        if tax_id in impuestos_por_id
+    ]
+
+    if not tax_ids:
+        return {
+            "precio_odoo": precio,
+            "precio_sin_impuestos": precio,
+            "precio_final": precio,
+            "impuestos": 0.0,
+            "tiene_impuestos": False,
+            "texto_impuestos": "Sin impuestos",
+        }
+
+    remoto = calcular_impuestos_remoto(
+        URL,
+        DB,
+        uid,
+        PASSWORD,
+        tax_ids,
+        precio,
+    )
+
+    if remoto.get("ok"):
+        calculo = remoto
+    else:
+        calculo = calcular_impuestos_locales(
+            precio,
+            tax_ids,
+            impuestos_por_id,
+        )
+
+    texto = " · ".join(nombres) if nombres else "Impuestos incluidos"
+    return {
+        "precio_odoo": precio,
+        "precio_sin_impuestos": float(calculo["total_excluded"]),
+        "precio_final": float(calculo["total_included"]),
+        "impuestos": float(calculo["tax_amount"]),
+        "tiene_impuestos": True,
+        "texto_impuestos": f"{texto} · precio final",
+    }
+
+
+def actualizar_precio_linea(
+    linea: dict[str, Any],
+    nuevo_precio_odoo: float,
+) -> None:
+    """Actualiza el price_unit de Odoo y su equivalente final visible."""
+
+    producto = productos_por_id.get(int(linea["product_id"]))
+    precio = max(0.0, float(nuevo_precio_odoo))
+    linea["precio_unitario"] = precio
+
+    if precio == 0.0 or not producto:
+        linea["precio_final_unitario"] = 0.0
+        linea["impuestos_unitarios"] = 0.0
+        return
+
+    detalle = detalle_precio_producto(producto, precio)
+    linea["precio_final_unitario"] = float(detalle["precio_final"])
+    linea["impuestos_unitarios"] = float(detalle["impuestos"])
+    linea["tiene_impuestos"] = bool(detalle["tiene_impuestos"])
+    linea["texto_impuestos"] = str(detalle["texto_impuestos"])
+
+
+def precio_final_linea(linea: dict[str, Any]) -> float:
+    if float(linea.get("precio_unitario") or 0.0) == 0.0:
+        return 0.0
+    if "precio_final_unitario" not in linea:
+        actualizar_precio_linea(linea, float(linea["precio_unitario"]))
+    return float(linea.get("precio_final_unitario") or 0.0)
+
+
+# Migra carritos que permanecieron en session_state al actualizar la aplicación.
+for _linea_existente in st.session_state.carrito:
+    precio_final_linea(_linea_existente)
 
 
 # =============================================================================
@@ -1374,8 +1702,7 @@ def etiqueta_producto_desktop(producto_id: int) -> str:
     producto = productos_por_id[int(producto_id)]
     codigo = str(producto.get("default_code") or "S/C")
     nombre = str(producto.get("name") or "Producto")
-    precio = float(producto.get("list_price") or 0.0)
-    return f"{codigo} — {nombre} · {moneda(precio)}"
+    return f"{codigo} — {nombre}"
 
 
 def sincronizar_producto_desktop() -> None:
@@ -1523,7 +1850,7 @@ def totales_carrito() -> tuple[int, int, int, float]:
         if float(x["precio_unitario"]) == 0.0
     )
     total = sum(
-        int(x["cantidad"]) * float(x["precio_unitario"])
+        int(x["cantidad"]) * precio_final_linea(x)
         for x in st.session_state.carrito
     )
     return lineas, unidades, gratis, total
@@ -1565,7 +1892,8 @@ def render_carrito(
                 linea = lineas[0]
                 linea_id = str(linea["linea_id"])
                 cantidad = int(linea["cantidad"])
-                precio = float(linea["precio_unitario"])
+                precio_odoo = float(linea["precio_unitario"])
+                precio = precio_final_linea(linea)
                 subtotal = cantidad * precio
                 chip = (
                     '<span class="rv-free-chip">GRATIS</span>'
@@ -1580,6 +1908,7 @@ def render_carrito(
                             <div>
                                 <p class="rv-cart-name">{seguro(linea['nombre_producto'])}{chip}</p>
                                 <p class="rv-cart-detail">{cantidad} × {moneda(precio)} · {seguro(linea['codigo'])}</p>
+                                <p class="rv-tax-note {'rv-tax-note-none' if not linea.get('tiene_impuestos') else ''}">{seguro(linea.get('texto_impuestos') or 'Sin impuestos')}</p>
                             </div>
                             <p class="rv-cart-subtotal">{moneda(subtotal)}</p>
                         </div>
@@ -1621,15 +1950,15 @@ def render_carrito(
                                 min_value=1,
                                 value=cantidad,
                                 step=1,
-                                key=f"{prefijo}_qty_{linea_id}_{cantidad}_{precio:.2f}",
+                                key=f"{prefijo}_qty_{linea_id}_{cantidad}_{precio_odoo:.2f}",
                             )
                             nuevo_precio = st.number_input(
-                                "Precio unitario",
+                                "Precio configurado en Odoo",
                                 min_value=0.0,
-                                value=precio,
+                                value=precio_odoo,
                                 step=0.01,
                                 format="%.2f",
-                                key=f"{prefijo}_price_{linea_id}_{cantidad}_{precio:.2f}",
+                                key=f"{prefijo}_price_{linea_id}_{cantidad}_{precio_odoo:.2f}",
                             )
                             guardar = st.form_submit_button(
                                 "Guardar cambios",
@@ -1638,7 +1967,7 @@ def render_carrito(
                             )
                             if guardar:
                                 linea["cantidad"] = int(nueva_cantidad)
-                                linea["precio_unitario"] = float(nuevo_precio)
+                                actualizar_precio_linea(linea, float(nuevo_precio))
                                 st.rerun()
 
                         if st.button(
@@ -1666,7 +1995,8 @@ def render_carrito(
                 paid_id = str(cobrada["linea_id"])
                 free_id = str(gratis["linea_id"])
                 combinacion = f"{int(cobrada['cantidad'])}+{int(gratis['cantidad'])}"
-                subtotal = int(cobrada["cantidad"]) * float(cobrada["precio_unitario"])
+                precio_cobrado_final = precio_final_linea(cobrada)
+                subtotal = int(cobrada["cantidad"]) * precio_cobrado_final
 
                 with st.container(border=True):
                     st.markdown(
@@ -1674,7 +2004,8 @@ def render_carrito(
                         <div class="rv-cart-line">
                             <div>
                                 <p class="rv-cart-name">{seguro(cobrada['nombre_producto'])}<span class="rv-promo-chip">{combinacion}</span></p>
-                                <p class="rv-cart-detail">{cobrada['cantidad']} cobradas · {gratis['cantidad']} gratis · {moneda(float(cobrada['precio_unitario']))}</p>
+                                <p class="rv-cart-detail">{cobrada['cantidad']} cobradas · {gratis['cantidad']} gratis · {moneda(precio_cobrado_final)} final c/u</p>
+                                <p class="rv-tax-note {'rv-tax-note-none' if not cobrada.get('tiene_impuestos') else ''}">{seguro(cobrada.get('texto_impuestos') or 'Sin impuestos')}</p>
                             </div>
                             <p class="rv-cart-subtotal">{moneda(subtotal)}</p>
                         </div>
@@ -1702,7 +2033,7 @@ def render_carrito(
                                     key=f"{prefijo}_free_{grupo_id}_{int(cobrada['cantidad'])}_{int(gratis['cantidad'])}_{float(cobrada['precio_unitario']):.2f}",
                                 )
                             precio = st.number_input(
-                                "Precio cobrado",
+                                "Precio configurado en Odoo",
                                 min_value=0.0,
                                 value=float(cobrada["precio_unitario"]),
                                 step=0.01,
@@ -1716,9 +2047,9 @@ def render_carrito(
                             )
                             if guardar:
                                 cobrada["cantidad"] = int(cobradas)
-                                cobrada["precio_unitario"] = float(precio)
+                                actualizar_precio_linea(cobrada, float(precio))
                                 gratis["cantidad"] = int(gratuitas)
-                                gratis["precio_unitario"] = 0.0
+                                actualizar_precio_linea(gratis, 0.0)
                                 st.rerun()
 
                         if st.button(
@@ -1784,9 +2115,13 @@ def dialogo_promocion(producto_id: int) -> None:
     nombre = str(producto.get("name") or "Producto")
     codigo = str(producto.get("default_code") or "S/C")
     precio_lista = float(producto.get("list_price") or 0.0)
+    detalle_lista = detalle_precio_producto(producto, precio_lista)
 
     st.markdown(f"### {seguro(nombre)}")
-    st.caption(f"{codigo} · Precio de lista {moneda(precio_lista)}")
+    st.caption(
+        f"{codigo} · Precio final {moneda(float(detalle_lista['precio_final']))} · "
+        f"{detalle_lista['texto_impuestos']}"
+    )
 
     preset = st.radio(
         "Promoción",
@@ -1820,7 +2155,7 @@ def dialogo_promocion(producto_id: int) -> None:
         )
 
     precio = st.number_input(
-        "Precio unitario cobrado",
+        "Precio configurado en Odoo",
         min_value=0.0,
         value=precio_lista,
         step=0.01,
@@ -1829,8 +2164,10 @@ def dialogo_promocion(producto_id: int) -> None:
     )
 
     combinacion = f"{int(cobradas)}+{int(gratis)}"
+    detalle_promocion = detalle_precio_producto(producto, float(precio))
     st.info(
-        f"Se crearán 2 líneas: {int(cobradas)} con precio y "
+        f"Se crearán 2 líneas: {int(cobradas)} con precio final "
+        f"{moneda(float(detalle_promocion['precio_final']))} y "
         f"{int(gratis)} a $0.00."
     )
 
@@ -1871,10 +2208,11 @@ if resultado:
         st.markdown(f"## {seguro(resultado['folio'])}")
         st.markdown(f"**Cliente:** {seguro(resultado['cliente'])}")
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Líneas", resultado["lineas"])
         c2.metric("Unidades", resultado["unidades"])
-        c3.metric("Total", moneda(resultado["total"]))
+        c3.metric("Impuestos", moneda(resultado.get("impuestos", 0.0)))
+        c4.metric("Total final", moneda(resultado["total"]))
 
         st.markdown("### Compartir pedido")
         st.link_button(
@@ -2071,6 +2409,7 @@ def render_desktop_clasico() -> None:
                     sincronizar_producto_desktop()
 
                 precio_lista = float(producto.get("list_price") or 0.0)
+                detalle_lista = detalle_precio_producto(producto, precio_lista)
                 st.markdown(
                     f"""
                     <div class="rv-classic-product-preview">
@@ -2079,7 +2418,8 @@ def render_desktop_clasico() -> None:
                         </p>
                         <p class="rv-classic-product-meta">
                             Código {seguro(producto.get('default_code') or 'S/C')}
-                            · Precio de lista {moneda(precio_lista)}
+                            · Precio final {moneda(float(detalle_lista['precio_final']))}
+                            · {seguro(detalle_lista['texto_impuestos'])}
                         </p>
                     </div>
                     """,
@@ -2102,15 +2442,23 @@ def render_desktop_clasico() -> None:
                     )
                 with precio_col:
                     precio_normal = st.number_input(
-                        "Precio unitario",
+                        "Precio configurado en Odoo",
                         min_value=0.0,
                         step=0.01,
                         format="%.2f",
                         key="desktop_precio_normal",
                     )
 
-                subtotal = int(cantidad_normal) * float(precio_normal)
-                st.caption(f"Subtotal de esta línea: {moneda(subtotal)}")
+                detalle_normal = (
+                    detalle_precio_producto(producto, float(precio_normal))
+                    if producto
+                    else {"precio_final": float(precio_normal), "texto_impuestos": ""}
+                )
+                subtotal = int(cantidad_normal) * float(detalle_normal["precio_final"])
+                st.caption(
+                    f"Precio final unitario: {moneda(float(detalle_normal['precio_final']))} · "
+                    f"Subtotal final: {moneda(subtotal)}"
+                )
 
                 if st.button(
                     "Agregar venta al carrito",
@@ -2151,7 +2499,7 @@ def render_desktop_clasico() -> None:
                     )
 
                 precio_promocion = st.number_input(
-                    "Precio unitario de la parte cobrada",
+                    "Precio configurado en Odoo",
                     min_value=0.0,
                     step=0.01,
                     format="%.2f",
@@ -2159,14 +2507,20 @@ def render_desktop_clasico() -> None:
                 )
 
                 combinacion = f"{int(cantidad_cobrada)}+{int(cantidad_gratis)}"
-                subtotal_promocion = (
-                    int(cantidad_cobrada) * float(precio_promocion)
+                detalle_promocion_desktop = (
+                    detalle_precio_producto(producto, float(precio_promocion))
+                    if producto
+                    else {"precio_final": float(precio_promocion)}
                 )
+                precio_final_promocion = float(
+                    detalle_promocion_desktop["precio_final"]
+                )
+                subtotal_promocion = int(cantidad_cobrada) * precio_final_promocion
                 st.markdown(
                     f"""
                     <div class="rv-classic-promo-preview">
                         <strong>Promoción {combinacion}</strong><br>
-                        {int(cantidad_cobrada)} cobradas × {moneda(float(precio_promocion))}<br>
+                        {int(cantidad_cobrada)} cobradas × {moneda(precio_final_promocion)} final<br>
                         {int(cantidad_gratis)} gratis × $0.00<br>
                         Total de la promoción: <strong>{moneda(subtotal_promocion)}</strong>
                     </div>
@@ -2427,7 +2781,10 @@ def render_catalogo(*, movil: bool) -> None:
                 producto = productos_por_id[producto_id]
                 codigo = str(producto.get("default_code") or "S/C")
                 nombre = str(producto.get("name") or "Producto")
-                precio = float(producto.get("list_price") or 0.0)
+                precio_base = float(producto.get("list_price") or 0.0)
+                detalle_precio = detalle_precio_producto(producto, precio_base)
+                precio = float(detalle_precio["precio_final"])
+                clase_impuesto = "" if detalle_precio["tiene_impuestos"] else "rv-tax-note-none"
 
                 with st.container(
                     border=True,
@@ -2439,6 +2796,7 @@ def render_catalogo(*, movil: bool) -> None:
                             <p class="rv-product-code">{seguro(codigo)}</p>
                             <p class="rv-product-name">{seguro(nombre)}</p>
                             <p class="rv-product-price">{moneda(precio)}</p>
+                            <p class="rv-tax-note {clase_impuesto}">{seguro(detalle_precio['texto_impuestos'])}</p>
                         </div>
                         """,
                         unsafe_allow_html=True,
@@ -2474,7 +2832,10 @@ def render_catalogo(*, movil: bool) -> None:
                     producto = productos_por_id[producto_id]
                     codigo = str(producto.get("default_code") or "S/C")
                     nombre = str(producto.get("name") or "Producto")
-                    precio = float(producto.get("list_price") or 0.0)
+                    precio_base = float(producto.get("list_price") or 0.0)
+                    detalle_precio = detalle_precio_producto(producto, precio_base)
+                    precio = float(detalle_precio["precio_final"])
+                    clase_impuesto = "" if detalle_precio["tiene_impuestos"] else "rv-tax-note-none"
 
                     with columna:
                         with st.container(border=True):
@@ -2484,6 +2845,7 @@ def render_catalogo(*, movil: bool) -> None:
                                     <p class="rv-product-code">{seguro(codigo)}</p>
                                     <p class="rv-product-name">{seguro(nombre)}</p>
                                     <p class="rv-product-price">{moneda(precio)}</p>
+                                    <p class="rv-tax-note {clase_impuesto}">{seguro(detalle_precio['texto_impuestos'])}</p>
                                 </div>
                                 """,
                                 unsafe_allow_html=True,
@@ -2655,7 +3017,7 @@ if ES_MOVIL:
 else:
     # En escritorio se usa una interfaz totalmente distinta, basada en el
     # diseño clásico proporcionado por el usuario. No se renderiza el catálogo
-    # POS móvil ni la barra inferior.
+    # interfaz móvil ni la barra inferior.
     render_desktop_clasico()
 
 
@@ -2680,7 +3042,14 @@ if st.session_state.enviar_pedido:
     else:
         with st.spinner("Creando el pedido en Odoo..."):
             try:
-                _, folio, estado = crear_pedido_odoo(
+                (
+                    _,
+                    folio,
+                    estado,
+                    total_sin_impuestos_odoo,
+                    impuestos_odoo,
+                    total_odoo,
+                ) = crear_pedido_odoo(
                     uid=uid,
                     cliente_id=int(st.session_state.cliente_id),
                     carrito=st.session_state.carrito,
@@ -2703,7 +3072,13 @@ if st.session_state.enviar_pedido:
                     "lineas": lineas,
                     "unidades": unidades,
                     "unidades_gratis": gratis,
-                    "total": total,
+                    "subtotal_sin_impuestos": (
+                        total_sin_impuestos_odoo
+                        if total_sin_impuestos_odoo or total_odoo
+                        else max(0.0, total - impuestos_odoo)
+                    ),
+                    "impuestos": impuestos_odoo,
+                    "total": total_odoo if total_odoo else total,
                     "texto_whatsapp": texto_whatsapp,
                     "enlace_whatsapp": crear_enlace_whatsapp(texto_whatsapp),
                 }
