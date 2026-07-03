@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import html
+import json
 import os
+import time
 import unicodedata
 import uuid
 import xmlrpc.client
@@ -29,6 +32,12 @@ CONFIRMAR_AUTOMATICAMENTE = False
 PRODUCTOS_POR_PAGINA = 6
 COLUMNAS_CATALOGO = 3
 PROMOCIONES_RAPIDAS = ("1+1", "2+1", "2+2", "4+1", "10+2", "11+1", "Otra")
+
+# Borrador persistente en el navegador. Se elimina después de crear el pedido
+# o al iniciar uno nuevo. El vencimiento evita recuperar pedidos antiguos.
+BORRADOR_LOCAL_KEY = "rapyvet_pedido_borrador_v1"
+BORRADOR_LOCAL_VERSION = 1
+BORRADOR_LOCAL_TTL_SEGUNDOS = 24 * 60 * 60
 
 
 # =============================================================================
@@ -65,6 +74,13 @@ def inicializar_estado() -> None:
         "desktop_cantidad_gratis": 1,
         "desktop_precio_promocion": 0.0,
         "desktop_limpiar_producto": False,
+        # Control del borrador guardado en localStorage.
+        "borrador_local_cargado": False,
+        "borrador_local_disponible": True,
+        "borrador_local_pendiente": None,
+        "borrador_local_huella": "",
+        "borrador_local_eliminar": False,
+        "borrador_local_restaurado": False,
     }
 
     for clave, valor in valores.items():
@@ -959,6 +975,215 @@ else:
 
 
 # =============================================================================
+# BORRADOR LOCAL DEL NAVEGADOR
+# =============================================================================
+
+
+def _expresion_leer_borrador_local() -> str:
+    clave = json.dumps(BORRADOR_LOCAL_KEY)
+    return (
+        "(() => {"
+        "try {"
+        f"const value = window.localStorage.getItem({clave});"
+        "return JSON.stringify({ready: true, value: value, error: null});"
+        "} catch (error) {"
+        "return JSON.stringify({ready: true, value: null, error: String(error)});"
+        "}"
+        "})()"
+    )
+
+
+def _expresion_guardar_borrador_local(valor_json: str) -> str:
+    clave = json.dumps(BORRADOR_LOCAL_KEY)
+    valor = json.dumps(valor_json, ensure_ascii=False)
+    return (
+        "(() => {"
+        "try {"
+        f"window.localStorage.setItem({clave}, {valor});"
+        "return true;"
+        "} catch (error) { return false; }"
+        "})()"
+    )
+
+
+def _expresion_eliminar_borrador_local() -> str:
+    clave = json.dumps(BORRADOR_LOCAL_KEY)
+    return (
+        "(() => {"
+        "try {"
+        f"window.localStorage.removeItem({clave});"
+        "return true;"
+        "} catch (error) { return false; }"
+        "})()"
+    )
+
+
+def _contenido_borrador_actual() -> dict[str, Any]:
+    """Devuelve únicamente datos JSON necesarios para recuperar el pedido."""
+
+    lineas: list[dict[str, Any]] = []
+    campos_linea = (
+        "linea_id",
+        "product_id",
+        "nombre_producto",
+        "codigo",
+        "cantidad",
+        "precio_unitario",
+        "precio_final_unitario",
+        "impuestos_unitarios",
+        "tiene_impuestos",
+        "texto_impuestos",
+        "tipo",
+        "grupo_promocion",
+        "parte_promocion",
+    )
+
+    for linea in st.session_state.get("carrito", []):
+        if not isinstance(linea, dict):
+            continue
+        lineas.append(
+            {
+                campo: linea.get(campo)
+                for campo in campos_linea
+            }
+        )
+
+    cliente_id = st.session_state.get("cliente_id")
+    try:
+        cliente_id = int(cliente_id) if cliente_id is not None else None
+    except (TypeError, ValueError):
+        cliente_id = None
+
+    return {
+        "version": BORRADOR_LOCAL_VERSION,
+        "cliente_id": cliente_id,
+        "carrito": lineas,
+        "nota_pedido": str(st.session_state.get("nota_pedido") or ""),
+    }
+
+
+def _huella_borrador(contenido: dict[str, Any]) -> str:
+    serializado = json.dumps(
+        contenido,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serializado.encode("utf-8")).hexdigest()
+
+
+def guardar_borrador_en_navegador(component_key: str) -> None:
+    """Guarda solo cuando cambia el cliente, carrito o nota."""
+
+    if not st.session_state.get("borrador_local_cargado", False):
+        return
+    if not st.session_state.get("borrador_local_disponible", True):
+        return
+    if st.session_state.get("borrador_local_pendiente") is not None:
+        return
+
+    contenido = _contenido_borrador_actual()
+    hay_datos = bool(
+        contenido["cliente_id"]
+        or contenido["carrito"]
+        or str(contenido["nota_pedido"]).strip()
+    )
+    debe_eliminar = bool(
+        st.session_state.get("borrador_local_eliminar", False)
+        or st.session_state.get("resultado_pedido")
+        or not hay_datos
+    )
+
+    if debe_eliminar:
+        if st.session_state.get("borrador_local_huella") != "__eliminado__":
+            streamlit_js_eval(
+                js_expressions=_expresion_eliminar_borrador_local(),
+                want_output=False,
+                key=component_key,
+            )
+            st.session_state.borrador_local_huella = "__eliminado__"
+        st.session_state.borrador_local_eliminar = False
+        return
+
+    huella = _huella_borrador(contenido)
+    if huella == st.session_state.get("borrador_local_huella"):
+        return
+
+    paquete = {
+        **contenido,
+        "updated_at": time.time(),
+    }
+    paquete_json = json.dumps(
+        paquete,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    streamlit_js_eval(
+        js_expressions=_expresion_guardar_borrador_local(paquete_json),
+        want_output=False,
+        key=component_key,
+    )
+    st.session_state.borrador_local_huella = huella
+
+
+def cargar_borrador_del_navegador() -> None:
+    """Lee localStorage una vez al iniciar una nueva sesión de Streamlit."""
+
+    if st.session_state.get("borrador_local_cargado", False):
+        return
+
+    respuesta = streamlit_js_eval(
+        js_expressions=_expresion_leer_borrador_local(),
+        want_output=True,
+        key="rv_borrador_local_lectura_v1",
+    )
+
+    if respuesta is None:
+        st.markdown(
+            '<div class="rv-loading">Recuperando pedido en curso…</div>',
+            unsafe_allow_html=True,
+        )
+        st.stop()
+
+    st.session_state.borrador_local_cargado = True
+
+    try:
+        envoltura = json.loads(str(respuesta))
+        if isinstance(envoltura, dict) and envoltura.get("error"):
+            st.session_state.borrador_local_disponible = False
+            return
+        valor = envoltura.get("value") if isinstance(envoltura, dict) else None
+        paquete = json.loads(valor) if valor else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        paquete = None
+        st.session_state.borrador_local_eliminar = True
+
+    if not isinstance(paquete, dict):
+        return
+
+    try:
+        version = int(paquete.get("version") or 0)
+        actualizado = float(paquete.get("updated_at") or 0.0)
+    except (TypeError, ValueError):
+        st.session_state.borrador_local_eliminar = True
+        return
+
+    vigente = 0 <= (time.time() - actualizado) <= BORRADOR_LOCAL_TTL_SEGUNDOS
+    if version != BORRADOR_LOCAL_VERSION or not vigente:
+        st.session_state.borrador_local_eliminar = True
+        return
+
+    if not isinstance(paquete.get("carrito", []), list):
+        st.session_state.borrador_local_eliminar = True
+        return
+
+    st.session_state.borrador_local_pendiente = paquete
+
+
+cargar_borrador_del_navegador()
+
+
+# =============================================================================
 # CONFIGURACIÓN Y ODOO
 # =============================================================================
 
@@ -1420,7 +1645,8 @@ def agregar_venta_rapida(producto_id: int) -> None:
         st.session_state.carrito.append(crear_linea(producto, 1, precio_lista))
 
     registrar_reciente(int(producto_id))
-    limpiar_busqueda_catalogo()
+    # Conserva la búsqueda actual para poder seguir agregando productos
+    # relacionados sin volver a escribir el término.
     st.session_state.notificacion_pendiente = {
         "texto": f"{producto.get('name') or 'Producto'} agregado",
         "icono": "✅",
@@ -1496,6 +1722,7 @@ def vaciar_carrito() -> None:
 
 
 def reiniciar_pedido() -> None:
+    st.session_state.borrador_local_eliminar = True
     vaciar_carrito()
     st.session_state.cliente_id = None
     st.session_state.resultado_pedido = None
@@ -1680,9 +1907,100 @@ def precio_final_linea(linea: dict[str, Any]) -> float:
     return float(linea.get("precio_final_unitario") or 0.0)
 
 
+def restaurar_borrador_local_si_corresponde() -> None:
+    """Valida el borrador contra los clientes y productos actuales de Odoo."""
+
+    paquete = st.session_state.get("borrador_local_pendiente")
+    if not isinstance(paquete, dict):
+        return
+
+    st.session_state.borrador_local_pendiente = None
+
+    # Nunca mezcla un borrador con un carrito que ya existe en esta sesión.
+    if st.session_state.carrito or st.session_state.resultado_pedido:
+        return
+
+    cliente_id = paquete.get("cliente_id")
+    try:
+        cliente_id = int(cliente_id) if cliente_id is not None else None
+    except (TypeError, ValueError):
+        cliente_id = None
+
+    if cliente_id not in clientes_por_id:
+        cliente_id = None
+
+    lineas_restauradas: list[dict[str, Any]] = []
+    for original in paquete.get("carrito", []):
+        if not isinstance(original, dict):
+            continue
+
+        try:
+            producto_id = int(original.get("product_id"))
+            cantidad = max(1, int(original.get("cantidad") or 1))
+            precio = max(0.0, float(original.get("precio_unitario") or 0.0))
+        except (TypeError, ValueError):
+            continue
+
+        producto = productos_por_id.get(producto_id)
+        if not producto:
+            continue
+
+        tipo = str(original.get("tipo") or "venta")
+        if tipo not in {
+            "venta",
+            "gratis",
+            "promocion_cobrada",
+            "promocion_gratis",
+        }:
+            tipo = "venta"
+
+        parte = original.get("parte_promocion")
+        parte = str(parte) if parte in {"cobrada", "gratis"} else None
+        grupo = original.get("grupo_promocion")
+        grupo = str(grupo) if grupo else None
+
+        # Una línea marcada como gratuita siempre vuelve con precio cero.
+        if parte == "gratis" or tipo in {"gratis", "promocion_gratis"}:
+            precio = 0.0
+
+        linea = crear_linea(
+            producto,
+            cantidad,
+            precio,
+            tipo=tipo,
+            grupo_promocion=grupo,
+            parte_promocion=parte,
+        )
+
+        linea_id = str(original.get("linea_id") or "").strip()
+        if linea_id:
+            linea["linea_id"] = linea_id[:80]
+
+        lineas_restauradas.append(linea)
+
+    nota = str(paquete.get("nota_pedido") or "")[:4000]
+    st.session_state.cliente_id = cliente_id
+    st.session_state.carrito = lineas_restauradas
+    st.session_state.nota_pedido = nota
+    st.session_state.desktop_nota_pedido = nota
+    st.session_state.mobile_nota_pedido = nota
+    st.session_state.borrador_local_restaurado = bool(
+        cliente_id or lineas_restauradas or nota.strip()
+    )
+
+    if st.session_state.borrador_local_restaurado:
+        st.toast("Pedido en curso recuperado", icon="↩️")
+
+
+restaurar_borrador_local_si_corresponde()
+
 # Migra carritos que permanecieron en session_state al actualizar la aplicación.
 for _linea_existente in st.session_state.carrito:
     precio_final_linea(_linea_existente)
+
+# Primera escritura del ciclo. Recupera cambios realizados justo antes de un
+# st.rerun() explícito y evita perderlos si la ejecución anterior terminó antes.
+guardar_borrador_en_navegador("rv_borrador_local_guardado_pre_v1")
 
 
 # =============================================================================
@@ -1744,7 +2062,7 @@ def agregar_venta_desktop(
         crear_linea(producto, int(cantidad), float(precio))
     )
     registrar_reciente(int(producto_id))
-    st.session_state.desktop_limpiar_producto = True
+    # Conserva el producto seleccionado después de agregarlo.
     st.session_state.notificacion_pendiente = {
         "texto": f"{producto.get('name') or 'Producto'} agregado al carrito",
         "icono": "✅",
@@ -1765,7 +2083,7 @@ def agregar_promocion_desktop(
         float(precio),
     )
     registrar_reciente(int(producto_id))
-    st.session_state.desktop_limpiar_producto = True
+    # Conserva el producto seleccionado después de agregarlo.
     st.session_state.notificacion_pendiente = {
         "texto": (
             f"Promoción {int(cantidad_cobrada)}+{int(cantidad_gratis)} de "
@@ -2180,7 +2498,7 @@ def dialogo_promocion(producto_id: int) -> None:
         agregar_promocion(producto, int(cobradas), int(gratis), float(precio))
         registrar_reciente(int(producto_id))
         st.session_state.producto_promocion_id = None
-        limpiar_busqueda_catalogo()
+        # El diálogo se cierra, pero el buscador conserva el término actual.
         st.session_state.notificacion_pendiente = {
             "texto": f"Promoción {combinacion} de {nombre} agregada",
             "icono": "🎁",
@@ -3083,6 +3401,7 @@ if st.session_state.enviar_pedido:
                     "enlace_whatsapp": crear_enlace_whatsapp(texto_whatsapp),
                 }
                 st.session_state.mostrar_balloons = True
+                st.session_state.borrador_local_eliminar = True
                 st.rerun()
 
             except xmlrpc.client.Fault as error:
@@ -3093,3 +3412,8 @@ if st.session_state.enviar_pedido:
                 st.error(f"Error de comunicación con Odoo. Código HTTP: {error.errcode}")
             except Exception as error:
                 st.error(f"No se pudo crear el pedido: {error}")
+
+
+# Segunda escritura del ciclo. Captura cambios realizados durante el render,
+# por ejemplo cantidades, precios o notas editadas en widgets.
+guardar_borrador_en_navegador("rv_borrador_local_guardado_post_v1")
