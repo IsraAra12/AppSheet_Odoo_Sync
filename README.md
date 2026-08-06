@@ -27,6 +27,10 @@ Ambas interfaces comparten el mismo cliente, carrito, promociones, notas, conexi
 - Mensaje sencillo para compartir por WhatsApp.
 - Tema claro u oscuro según el dispositivo.
 - Interfaz móvil y de escritorio separadas.
+- Revisión final del cliente, productos y total antes de enviar.
+- Referencia de seguridad para recuperar reintentos sin duplicar pedidos.
+- Conexiones con timeout para evitar pantallas bloqueadas indefinidamente.
+- Clientes recientes al inicio del selector.
 
 ---
 
@@ -162,7 +166,7 @@ El archivo real `.streamlit/secrets.toml` no debe subirse a GitHub.
 Dependencias actuales:
 
 ```txt
-streamlit>=1.58.0
+streamlit==1.58.0
 streamlit-keyup==0.3.0
 streamlit-js-eval==1.0.0
 ```
@@ -302,6 +306,8 @@ Cuando actualices el repositorio con **Push origin**, Streamlit Cloud volverá a
 
 - Mantén el repositorio privado.
 - No publiques `.streamlit/secrets.toml`.
+- Si `secrets.toml` llegó a versionarse, agregarlo a `.gitignore` no basta:
+  rota la clave de Odoo, retira el archivo del índice y sanea el historial.
 - Usa una clave de Odoo con los permisos mínimos necesarios.
 - Cambia inmediatamente cualquier clave expuesta.
 - Comparte la URL de la app solo con personal autorizado.
@@ -362,6 +368,12 @@ Antes de volver a enviar:
 ---
 
 ## Pruebas recomendadas antes de publicar
+
+Las pruebas automáticas de impuestos, conexión e idempotencia se ejecutan con:
+
+```powershell
+python -m unittest discover -s tests -v
+```
 
 ### Móvil
 

@@ -1,4 +1,10 @@
 .streamlit/secrets.toml
 .env
+.venv/
+.vs/
 __pycache__/
 *.pyc
+*.TMP
+*~RF*.TMP
+.pytest_cache/
+.coverage

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import logging
 import os
 import time
 import unicodedata
@@ -14,6 +15,9 @@ from urllib.parse import quote
 import streamlit as st
 from st_keyup import st_keyup
 from streamlit_js_eval import streamlit_js_eval
+
+from rapyvet.odoo_rpc import crear_proxy_odoo
+from rapyvet.taxes import calcular_impuestos as calcular_impuestos_locales
 
 
 # =============================================================================
@@ -32,6 +36,9 @@ CONFIRMAR_AUTOMATICAMENTE = False
 PRODUCTOS_POR_PAGINA = 6
 COLUMNAS_CATALOGO = 3
 PROMOCIONES_RAPIDAS = ("1+1", "2+1", "2+2", "4+1", "10+2", "11+1", "Otra")
+ODOO_TIMEOUT_SEGUNDOS = 15.0
+
+logger = logging.getLogger("rapyvet.pedidos")
 
 # Borrador persistente en el navegador. Se elimina después de crear el pedido
 # o al iniciar uno nuevo. El vencimiento evita recuperar pedidos antiguos.
@@ -53,6 +60,7 @@ def inicializar_estado() -> None:
         "mostrar_balloons": False,
         "producto_promocion_id": None,
         "productos_recientes": [],
+        "clientes_recientes": [],
         "busqueda_pos": "",
         "busqueda_widget_version": 0,
         "categoria_pos": "Todas",
@@ -64,6 +72,9 @@ def inicializar_estado() -> None:
         "mobile_nota_pedido": "",
         "mobile_tab": "Productos",
         "enviar_pedido": False,
+        "confirmar_envio": False,
+        "envio_en_progreso": False,
+        "pedido_token": f"RV-{uuid.uuid4().hex}",
         # Estado exclusivo de la interfaz de escritorio clásica.
         "desktop_producto_id": None,
         "desktop_ultimo_producto_id": None,
@@ -642,6 +653,34 @@ st.markdown(
             [data-testid="stToolbar"] { display: none !important; }
             [data-testid="stHeader"] { height: 0 !important; }
 
+            /* Streamlit apila columnas en pantallas angostas. En estos tres
+               controles la disposición horizontal ahorra varios gestos y
+               mantiene juntas las acciones relacionadas. */
+            .st-key-rv_mobile_client_card [data-testid="stHorizontalBlock"],
+            [class*="st-key-rv_mobile_product_card_"] [data-testid="stHorizontalBlock"],
+            .st-key-rv_mobile_bottom_bar [data-testid="stHorizontalBlock"] {
+                flex-wrap: nowrap !important;
+                align-items: stretch !important;
+            }
+
+            .st-key-rv_mobile_client_card [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"],
+            [class*="st-key-rv_mobile_product_card_"] [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"],
+            .st-key-rv_mobile_bottom_bar [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"] {
+                width: auto !important;
+                min-width: 0 !important;
+                flex: 1 1 0 !important;
+            }
+
+            .st-key-rv_mobile_client_card [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"]:last-child,
+            [class*="st-key-rv_mobile_product_card_"] [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"]:last-child {
+                flex: 0 0 3.25rem !important;
+            }
+
             .rv-mobile-appbar {
                 margin-bottom: .55rem;
                 padding: .62rem .68rem;
@@ -925,23 +964,38 @@ st.markdown(
 )
 
 
-# Detecta el tipo de dispositivo usando el ancho REAL de la pantalla.
-#
-# `window.innerWidth` dentro de un componente de Streamlit puede devolver el
-# ancho del iframe del componente y provocar que una computadora se clasifique
-# como teléfono. `window.screen.width` representa el ancho de la pantalla del
-# dispositivo y evita ese problema.
-ancho_dispositivo = streamlit_js_eval(
-    js_expressions="window.screen.width",
-    key="rv_screen_width_v2",
+# Detecta el dispositivo y recupera el borrador en una sola comunicación con
+# el navegador. La versión anterior necesitaba dos ciclos de carga separados.
+_clave_borrador_js = json.dumps(BORRADOR_LOCAL_KEY)
+_estado_navegador_crudo = streamlit_js_eval(
+    js_expressions=(
+        "(() => {"
+        "let width = window.screen.width;"
+        "try { width = window.parent.innerWidth || width; } catch (_) {}"
+        "try {"
+        f"const value = window.localStorage.getItem({_clave_borrador_js});"
+        "return JSON.stringify({width: width, value: value, error: null});"
+        "} catch (error) {"
+        "return JSON.stringify({width: width, value: null, error: String(error)});"
+        "}"
+        "})()"
+    ),
+    key="rv_browser_bootstrap_v1",
 )
 
-if ancho_dispositivo is None:
+if _estado_navegador_crudo is None:
     st.markdown(
         '<div class="rv-loading">Preparando la interfaz…</div>',
         unsafe_allow_html=True,
     )
     st.stop()
+
+try:
+    _estado_navegador = json.loads(str(_estado_navegador_crudo))
+except (TypeError, ValueError, json.JSONDecodeError):
+    _estado_navegador = {"width": None, "value": None, "error": "invalid"}
+
+ancho_dispositivo = _estado_navegador.get("width")
 
 
 def obtener_modo_forzado() -> str:
@@ -977,20 +1031,6 @@ else:
 # =============================================================================
 # BORRADOR LOCAL DEL NAVEGADOR
 # =============================================================================
-
-
-def _expresion_leer_borrador_local() -> str:
-    clave = json.dumps(BORRADOR_LOCAL_KEY)
-    return (
-        "(() => {"
-        "try {"
-        f"const value = window.localStorage.getItem({clave});"
-        "return JSON.stringify({ready: true, value: value, error: null});"
-        "} catch (error) {"
-        "return JSON.stringify({ready: true, value: null, error: String(error)});"
-        "}"
-        "})()"
-    )
 
 
 def _expresion_guardar_borrador_local(valor_json: str) -> str:
@@ -1059,6 +1099,7 @@ def _contenido_borrador_actual() -> dict[str, Any]:
         "cliente_id": cliente_id,
         "carrito": lineas,
         "nota_pedido": str(st.session_state.get("nota_pedido") or ""),
+        "pedido_token": str(st.session_state.get("pedido_token") or ""),
     }
 
 
@@ -1132,23 +1173,10 @@ def cargar_borrador_del_navegador() -> None:
     if st.session_state.get("borrador_local_cargado", False):
         return
 
-    respuesta = streamlit_js_eval(
-        js_expressions=_expresion_leer_borrador_local(),
-        want_output=True,
-        key="rv_borrador_local_lectura_v1",
-    )
-
-    if respuesta is None:
-        st.markdown(
-            '<div class="rv-loading">Recuperando pedido en curso…</div>',
-            unsafe_allow_html=True,
-        )
-        st.stop()
-
     st.session_state.borrador_local_cargado = True
 
     try:
-        envoltura = json.loads(str(respuesta))
+        envoltura = _estado_navegador
         if isinstance(envoltura, dict) and envoltura.get("error"):
             st.session_state.borrador_local_disponible = False
             return
@@ -1225,156 +1253,6 @@ URL, DB, USER, PASSWORD = obtener_configuracion()
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def calcular_impuestos_remoto(
-    url: str,
-    db: str,
-    uid: int,
-    password: str,
-    tax_ids: tuple[int, ...],
-    precio_odoo: float,
-) -> dict[str, Any]:
-    """Pide a Odoo el total incluido usando la configuración real del impuesto.
-
-    El valor recibido en ``precio_odoo`` sigue siendo el precio que Odoo espera
-    en ``sale.order.line.price_unit``. Si el impuesto está excluido, Odoo lo
-    suma; si está incluido, Odoo lo separa sin aumentar el total.
-    """
-
-    precio = max(0.0, float(precio_odoo))
-    ids = tuple(sorted({int(tax_id) for tax_id in tax_ids if int(tax_id) > 0}))
-
-    if not ids or precio == 0.0:
-        return {
-            "ok": True,
-            "total_excluded": precio,
-            "total_included": precio,
-            "tax_amount": 0.0,
-            "taxes": [],
-        }
-
-    try:
-        models = xmlrpc.client.ServerProxy(
-            f"{url}/xmlrpc/2/object",
-            allow_none=True,
-        )
-        resultado = models.execute_kw(
-            db,
-            int(uid),
-            password,
-            "account.tax",
-            "compute_all",
-            [list(ids), precio, False, 1.0, False, False],
-            {
-                "is_refund": False,
-                "handle_price_include": True,
-            },
-        )
-
-        total_excluded = float(resultado.get("total_excluded", precio))
-        total_included = float(resultado.get("total_included", precio))
-        return {
-            "ok": True,
-            "total_excluded": total_excluded,
-            "total_included": total_included,
-            "tax_amount": total_included - total_excluded,
-            "taxes": resultado.get("taxes", []),
-        }
-    except Exception as error:
-        # La interfaz no debe dejar de funcionar si el usuario de Odoo no tiene
-        # permiso de lectura sobre account.tax o si una instalación cambia la
-        # firma del método. El cálculo local de respaldo cubre los impuestos
-        # habituales (porcentaje, división y cantidad fija).
-        return {
-            "ok": False,
-            "error": str(error),
-            "total_excluded": precio,
-            "total_included": precio,
-            "tax_amount": 0.0,
-            "taxes": [],
-        }
-
-
-def _expandir_impuestos_locales(
-    tax_ids: list[int] | tuple[int, ...],
-    impuestos_por_id: dict[int, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Expande impuestos agrupados para el cálculo de respaldo."""
-
-    salida: list[dict[str, Any]] = []
-    vistos: set[int] = set()
-
-    def agregar(tax_id: int) -> None:
-        if tax_id in vistos:
-            return
-        vistos.add(tax_id)
-        impuesto = impuestos_por_id.get(int(tax_id))
-        if not impuesto:
-            return
-        if str(impuesto.get("amount_type") or "") == "group":
-            for child_id in impuesto.get("children_tax_ids") or []:
-                agregar(int(child_id))
-        else:
-            salida.append(impuesto)
-
-    for item in tax_ids:
-        agregar(int(item))
-
-    salida.sort(key=lambda tax: (int(tax.get("sequence") or 0), int(tax.get("id") or 0)))
-    return salida
-
-
-def calcular_impuestos_locales(
-    precio_odoo: float,
-    tax_ids: list[int] | tuple[int, ...],
-    impuestos_por_id: dict[int, dict[str, Any]],
-) -> dict[str, Any]:
-    """Respaldo para impuestos estándar cuando compute_all no está disponible."""
-
-    precio = max(0.0, float(precio_odoo))
-    impuestos = _expandir_impuestos_locales(tax_ids, impuestos_por_id)
-
-    if not impuestos or precio == 0.0:
-        return {
-            "total_excluded": precio,
-            "total_included": precio,
-            "tax_amount": 0.0,
-        }
-
-    total = precio
-    base_actual = precio
-
-    for impuesto in impuestos:
-        # Si está incluido, el precio capturado ya contiene ese impuesto.
-        if bool(impuesto.get("price_include")):
-            continue
-
-        tipo = str(impuesto.get("amount_type") or "percent")
-        importe = float(impuesto.get("amount") or 0.0)
-
-        if tipo == "fixed":
-            monto_impuesto = importe
-        elif tipo == "division":
-            tasa = importe / 100.0
-            monto_impuesto = (
-                (base_actual / (1.0 - tasa)) - base_actual
-                if 0.0 <= tasa < 1.0
-                else 0.0
-            )
-        else:
-            monto_impuesto = base_actual * (importe / 100.0)
-
-        total += monto_impuesto
-        if bool(impuesto.get("include_base_amount")):
-            base_actual += monto_impuesto
-
-    return {
-        "total_excluded": precio,
-        "total_included": total,
-        "tax_amount": total - precio,
-    }
-
-
-@st.cache_data(ttl=600, show_spinner=False)
 def cargar_datos_odoo(
     url: str,
     db: str,
@@ -1386,13 +1264,22 @@ def cargar_datos_odoo(
     list[dict[str, Any]],
     list[dict[str, Any]],
 ]:
-    common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True)
+    inicio = time.perf_counter()
+    common = crear_proxy_odoo(
+        url,
+        "/xmlrpc/2/common",
+        timeout=ODOO_TIMEOUT_SEGUNDOS,
+    )
     uid = common.authenticate(db, usuario, password, {})
 
     if not uid:
         raise RuntimeError("Odoo rechazó las credenciales proporcionadas.")
 
-    models = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object", allow_none=True)
+    models = crear_proxy_odoo(
+        url,
+        "/xmlrpc/2/object",
+        timeout=ODOO_TIMEOUT_SEGUNDOS,
+    )
 
     clientes = models.execute_kw(
         db,
@@ -1419,6 +1306,23 @@ def cargar_datos_odoo(
             "order": "default_code asc, name asc",
         },
     )
+
+    # El índice se construye una sola vez dentro del resultado cacheado. Así el
+    # buscador no normaliza nuevamente todo el catálogo en cada pulsación.
+    for cliente in clientes:
+        cliente["_busqueda"] = normalizar(
+            " ".join(
+                str(cliente.get(campo) or "")
+                for campo in ("name", "city", "vat", "email", "phone")
+            )
+        )
+
+    for producto in productos:
+        codigo_normalizado = normalizar(producto.get("default_code") or "")
+        nombre_normalizado = normalizar(producto.get("name") or "")
+        producto["_codigo_normalizado"] = codigo_normalizado
+        producto["_nombre_normalizado"] = nombre_normalizado
+        producto["_busqueda"] = f"{codigo_normalizado} {nombre_normalizado}"
 
     try:
         impuestos = models.execute_kw(
@@ -1448,6 +1352,13 @@ def cargar_datos_odoo(
         # se usa como respaldo cuando el usuario no puede ejecutar ese método.
         impuestos = []
 
+    logger.info(
+        "Catálogo Odoo cargado: %s clientes, %s productos, %s impuestos en %.2fs",
+        len(clientes),
+        len(productos),
+        len(impuestos),
+        time.perf_counter() - inicio,
+    )
     return int(uid), clientes, productos, impuestos
 
 
@@ -1456,8 +1367,63 @@ def crear_pedido_odoo(
     cliente_id: int,
     carrito: list[dict[str, Any]],
     nota: str,
+    pedido_token: str,
 ) -> tuple[int, str, str, float, float, float]:
-    models = xmlrpc.client.ServerProxy(f"{URL}/xmlrpc/2/object", allow_none=True)
+    models = crear_proxy_odoo(
+        URL,
+        "/xmlrpc/2/object",
+        timeout=ODOO_TIMEOUT_SEGUNDOS,
+    )
+    token = str(pedido_token).strip()[:40]
+    if not token.startswith("RV-"):
+        raise ValueError("La referencia interna del pedido no es válida.")
+
+    campos_resultado = [
+        "id",
+        "name",
+        "state",
+        "amount_untaxed",
+        "amount_tax",
+        "amount_total",
+    ]
+
+    # La misma referencia se conserva después de un timeout. Antes de crear se
+    # busca una orden previa para que reintentar recupere el resultado en lugar
+    # de duplicar el pedido.
+    existentes = models.execute_kw(
+        DB,
+        uid,
+        PASSWORD,
+        "sale.order",
+        "search_read",
+        [[("client_order_ref", "=", token)]],
+        {
+            "fields": campos_resultado,
+            "limit": 1,
+            "order": "id desc",
+        },
+    )
+
+    if existentes:
+        registro_existente = existentes[0]
+        sale_order_id = int(registro_existente["id"])
+        logger.warning(
+            "Pedido recuperado por referencia idempotente %s (Odoo id=%s)",
+            token,
+            sale_order_id,
+        )
+        return (
+            sale_order_id,
+            str(registro_existente.get("name") or sale_order_id),
+            (
+                "Pedido recuperado"
+                if str(registro_existente.get("state") or "") in {"sale", "done"}
+                else "Cotización recuperada"
+            ),
+            float(registro_existente.get("amount_untaxed") or 0.0),
+            float(registro_existente.get("amount_tax") or 0.0),
+            float(registro_existente.get("amount_total") or 0.0),
+        )
 
     lineas_odoo = [
         (
@@ -1475,7 +1441,8 @@ def crear_pedido_odoo(
     valores: dict[str, Any] = {
         "partner_id": int(cliente_id),
         "order_line": lineas_odoo,
-        "origin": "RapyVet Pedidos | Captura rápida",
+        "origin": f"RapyVet Pedidos | {token}",
+        "client_order_ref": token,
     }
 
     if nota.strip():
@@ -1489,6 +1456,7 @@ def crear_pedido_odoo(
         "create",
         [valores],
     )
+    logger.info("Pedido creado con referencia %s (Odoo id=%s)", token, sale_order_id)
 
     estado = "Cotización creada"
     if CONFIRMAR_AUTOMATICAMENTE:
@@ -1513,11 +1481,7 @@ def crear_pedido_odoo(
             [[sale_order_id]],
             {
                 "fields": [
-                    "name",
-                    "state",
-                    "amount_untaxed",
-                    "amount_tax",
-                    "amount_total",
+                    *campos_resultado,
                 ]
             },
         )
@@ -1729,6 +1693,9 @@ def reiniciar_pedido() -> None:
     st.session_state.nota_pedido = ""
     st.session_state.desktop_nota_pedido = ""
     st.session_state.mobile_nota_pedido = ""
+    st.session_state.confirmar_envio = False
+    st.session_state.envio_en_progreso = False
+    st.session_state.pedido_token = f"RV-{uuid.uuid4().hex}"
     limpiar_busqueda_catalogo()
     st.session_state.categoria_pos = "Todas"
     st.session_state.vista_pos = "Todos"
@@ -1783,7 +1750,9 @@ def limpiar_busqueda_catalogo() -> None:
 
 
 def solicitar_envio() -> None:
-    st.session_state.enviar_pedido = True
+    if st.session_state.get("envio_en_progreso", False):
+        return
+    st.session_state.confirmar_envio = True
 
 
 def cambiar_tab_movil(destino: str) -> None:
@@ -1848,23 +1817,14 @@ def detalle_precio_producto(
             "texto_impuestos": "Sin impuestos",
         }
 
-    remoto = calcular_impuestos_remoto(
-        URL,
-        DB,
-        uid,
-        PASSWORD,
-        tax_ids,
+    # El catálogo usa el esquema fiscal ya descargado. Antes se hacía una
+    # llamada XML-RPC por cada producto/precio visible, lo que convertía cada
+    # página y cada edición en una cadena de esperas contra Odoo.
+    calculo = calcular_impuestos_locales(
         precio,
+        tax_ids,
+        impuestos_por_id,
     )
-
-    if remoto.get("ok"):
-        calculo = remoto
-    else:
-        calculo = calcular_impuestos_locales(
-            precio,
-            tax_ids,
-            impuestos_por_id,
-        )
 
     texto = " · ".join(nombres) if nombres else "Impuestos incluidos"
     return {
@@ -1979,11 +1939,15 @@ def restaurar_borrador_local_si_corresponde() -> None:
         lineas_restauradas.append(linea)
 
     nota = str(paquete.get("nota_pedido") or "")[:4000]
+    pedido_token = str(paquete.get("pedido_token") or "").strip()
+    if not pedido_token.startswith("RV-") or len(pedido_token) > 40:
+        pedido_token = f"RV-{uuid.uuid4().hex}"
     st.session_state.cliente_id = cliente_id
     st.session_state.carrito = lineas_restauradas
     st.session_state.nota_pedido = nota
     st.session_state.desktop_nota_pedido = nota
     st.session_state.mobile_nota_pedido = nota
+    st.session_state.pedido_token = pedido_token
     st.session_state.borrador_local_restaurado = bool(
         cliente_id or lineas_restauradas or nota.strip()
     )
@@ -2012,7 +1976,26 @@ def etiqueta_cliente(cliente_id: int) -> str:
     cliente = clientes_por_id[cliente_id]
     nombre = cliente.get("name") or "Cliente sin nombre"
     ciudad = cliente.get("city") or "Sin ciudad"
-    return f"{nombre} · {ciudad}"
+    reciente = "★ " if int(cliente_id) in st.session_state.clientes_recientes else ""
+    return f"{reciente}{nombre} · {ciudad}"
+
+
+def opciones_clientes() -> list[int]:
+    """Coloca clientes usados recientemente al inicio del selector."""
+
+    recientes = [
+        int(cliente_id)
+        for cliente_id in st.session_state.clientes_recientes
+        if int(cliente_id) in clientes_por_id
+    ]
+    return [
+        *recientes,
+        *(
+            cliente_id
+            for cliente_id in clientes_por_id
+            if cliente_id not in recientes
+        ),
+    ]
 
 
 
@@ -2115,9 +2098,9 @@ def filtrar_productos() -> list[int]:
         if categoria != "Todas" and categoria_producto(producto) != categoria:
             continue
 
-        codigo = normalizar(producto.get("default_code") or "")
-        nombre = normalizar(producto.get("name") or "")
-        combinado = f"{codigo} {nombre}"
+        codigo = str(producto.get("_codigo_normalizado") or "")
+        nombre = str(producto.get("_nombre_normalizado") or "")
+        combinado = str(producto.get("_busqueda") or f"{codigo} {nombre}")
 
         if terminos and not all(termino in combinado for termino in terminos):
             continue
@@ -2411,15 +2394,14 @@ def render_carrito(
         if not st.session_state.cliente_id:
             st.info("Selecciona el cliente para crear el pedido.")
 
-        if st.button(
+        st.button(
             "Crear pedido en Odoo",
             type="primary",
             use_container_width=True,
-            disabled=not listo,
+            disabled=not listo or st.session_state.get("envio_en_progreso", False),
             key=f"{prefijo}_enviar",
-        ):
-            st.session_state.enviar_pedido = True
-            st.rerun()
+            on_click=solicitar_envio,
+        )
 
 
 # =============================================================================
@@ -2511,6 +2493,100 @@ def dialogo_carrito_movil() -> None:
     render_carrito("mobile", mostrar_vaciar=True, mostrar_envio=False)
 
 
+@st.dialog("Revisar y confirmar", width="large", on_dismiss="rerun")
+def dialogo_confirmar_pedido() -> None:
+    """Última revisión legible antes de realizar una escritura en Odoo."""
+
+    cliente_id = st.session_state.get("cliente_id")
+    if not cliente_id or not st.session_state.carrito:
+        st.error("Selecciona un cliente y agrega al menos un producto.")
+        return
+
+    cliente = clientes_por_id[int(cliente_id)]
+    elementos = elementos_carrito()
+    lineas, unidades, gratis, total = totales_carrito()
+
+    st.markdown(f"### {seguro(cliente.get('name') or 'Cliente')}")
+    detalles_cliente = [
+        str(cliente.get(campo) or "").strip()
+        for campo in ("city", "phone", "email")
+        if str(cliente.get(campo) or "").strip()
+    ]
+    if detalles_cliente:
+        st.caption(" · ".join(detalles_cliente))
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Productos", len(elementos))
+    c2.metric("Unidades", unidades)
+    c3.metric("Total estimado", moneda(total))
+
+    lineas_cero_no_promocion = [
+        linea
+        for linea in st.session_state.carrito
+        if float(linea.get("precio_unitario") or 0.0) == 0.0
+        and linea.get("parte_promocion") != "gratis"
+    ]
+    if lineas_cero_no_promocion:
+        st.warning(
+            "Hay productos normales con precio $0.00. Confirma que realmente "
+            "deban enviarse gratis."
+        )
+
+    with st.expander("Productos del pedido", expanded=True):
+        for tipo_elemento, grupo in elementos:
+            if tipo_elemento == "promocion":
+                cobrada = next(
+                    (x for x in grupo if x.get("parte_promocion") == "cobrada"),
+                    grupo[0],
+                )
+                gratuita = next(
+                    (x for x in grupo if x.get("parte_promocion") == "gratis"),
+                    grupo[-1],
+                )
+                subtotal_texto = moneda(
+                    int(cobrada["cantidad"]) * precio_final_linea(cobrada)
+                ).replace("$", r"\$")
+                st.markdown(
+                    f"**{seguro(cobrada['nombre_producto'])}** · "
+                    f"{int(cobrada['cantidad'])}+{int(gratuita['cantidad'])} · "
+                    f"{subtotal_texto}"
+                )
+            else:
+                linea = grupo[0]
+                precio_texto = moneda(precio_final_linea(linea)).replace("$", r"\$")
+                subtotal_texto = moneda(
+                    int(linea["cantidad"]) * precio_final_linea(linea)
+                ).replace("$", r"\$")
+                st.markdown(
+                    f"**{seguro(linea['nombre_producto'])}** · "
+                    f"{int(linea['cantidad'])} × {precio_texto} · {subtotal_texto}"
+                )
+
+    nota = str(st.session_state.get("nota_pedido") or "").strip()
+    if nota:
+        st.info(f"Nota: {nota}")
+
+    st.caption(
+        f"{lineas} líneas · {gratis} unidades gratis · "
+        "Odoo confirmará impuestos y total definitivo."
+    )
+
+    volver_col, confirmar_col = st.columns([1, 1.5])
+    with volver_col:
+        if st.button("Seguir editando", use_container_width=True):
+            st.session_state.confirmar_envio = False
+            st.rerun()
+    with confirmar_col:
+        if st.button(
+            "Confirmar y crear en Odoo",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.session_state.confirmar_envio = False
+            st.session_state.enviar_pedido = True
+            st.rerun()
+
+
 # =============================================================================
 # PANTALLA DE RESULTADO
 # =============================================================================
@@ -2525,6 +2601,8 @@ if resultado:
         st.success(f"✅ {resultado['estado']} correctamente en Odoo")
         st.markdown(f"## {seguro(resultado['folio'])}")
         st.markdown(f"**Cliente:** {seguro(resultado['cliente'])}")
+        if resultado.get("referencia"):
+            st.caption(f"Referencia de seguridad: {resultado['referencia']}")
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Líneas", resultado["lineas"])
@@ -2669,7 +2747,7 @@ def render_desktop_clasico() -> None:
 
             cliente_id = st.selectbox(
                 "Selecciona el cliente",
-                options=list(clientes_por_id.keys()),
+                options=opciones_clientes(),
                 index=None,
                 placeholder="Escribe para buscar…",
                 format_func=etiqueta_cliente,
@@ -2936,7 +3014,7 @@ def render_cliente() -> None:
             with selector_col:
                 st.selectbox(
                     "Cliente del pedido",
-                    options=list(clientes_por_id.keys()),
+                    options=opciones_clientes(),
                     index=None,
                     placeholder="Buscar cliente por nombre o ciudad…",
                     format_func=etiqueta_cliente,
@@ -2952,6 +3030,16 @@ def render_cliente() -> None:
                 ):
                     cargar_datos_odoo.clear()
                     st.rerun()
+            cliente_actual = st.session_state.get("cliente_id")
+            if cliente_actual:
+                cliente = clientes_por_id[int(cliente_actual)]
+                datos = [
+                    str(cliente.get(campo) or "").strip()
+                    for campo in ("city", "phone")
+                    if str(cliente.get(campo) or "").strip()
+                ]
+                if datos:
+                    st.caption("Cliente seleccionado · " + " · ".join(datos))
         return
 
     with st.container(border=True):
@@ -2959,7 +3047,7 @@ def render_cliente() -> None:
         with cliente_col:
             st.selectbox(
                 "Cliente del pedido",
-                options=list(clientes_por_id.keys()),
+                options=opciones_clientes(),
                 index=None,
                 placeholder="Buscar cliente por nombre o ciudad…",
                 format_func=etiqueta_cliente,
@@ -3010,7 +3098,7 @@ def render_catalogo(*, movil: bool) -> None:
                     "busqueda_pos_input_"
                     f"{st.session_state.busqueda_widget_version}"
                 ),
-                debounce=160,
+                debounce=320,
             )
 
             busqueda_actual = str(busqueda_actual or "")
@@ -3286,7 +3374,10 @@ def render_navegacion_movil() -> None:
                         "Crear pedido",
                         type="primary",
                         use_container_width=True,
-                        disabled=not listo,
+                        disabled=(
+                            not listo
+                            or st.session_state.get("envio_en_progreso", False)
+                        ),
                         key="mobile_bottom_checkout",
                         on_click=solicitar_envio,
                     )
@@ -3348,6 +3439,14 @@ if producto_promocion_pendiente is not None:
     dialogo_promocion(int(producto_promocion_pendiente))
 
 
+confirmacion_pendiente = st.session_state.get("confirmar_envio", False)
+if confirmacion_pendiente:
+    # Se consume antes de abrir el diálogo para que cerrarlo no lo reactive en
+    # la siguiente interacción.
+    st.session_state.confirmar_envio = False
+    dialogo_confirmar_pedido()
+
+
 # =============================================================================
 # ENVÍO
 # =============================================================================
@@ -3358,6 +3457,8 @@ if st.session_state.enviar_pedido:
     if not st.session_state.cliente_id or not st.session_state.carrito:
         st.error("Selecciona un cliente y agrega productos antes de enviar.")
     else:
+        st.session_state.envio_en_progreso = True
+        pedido_token = str(st.session_state.pedido_token)
         with st.spinner("Creando el pedido en Odoo..."):
             try:
                 (
@@ -3372,10 +3473,20 @@ if st.session_state.enviar_pedido:
                     cliente_id=int(st.session_state.cliente_id),
                     carrito=st.session_state.carrito,
                     nota=st.session_state.nota_pedido,
+                    pedido_token=pedido_token,
                 )
 
                 cliente = clientes_por_id[int(st.session_state.cliente_id)]
                 nombre_cliente = str(cliente.get("name") or "Cliente")
+                clientes_recientes = [
+                    int(cliente_id)
+                    for cliente_id in st.session_state.clientes_recientes
+                    if int(cliente_id) != int(st.session_state.cliente_id)
+                ]
+                st.session_state.clientes_recientes = [
+                    int(st.session_state.cliente_id),
+                    *clientes_recientes,
+                ][:8]
                 carrito_enviado = [dict(linea) for linea in st.session_state.carrito]
                 lineas, unidades, gratis, total = totales_carrito()
                 texto_whatsapp = construir_mensaje_whatsapp(
@@ -3385,6 +3496,7 @@ if st.session_state.enviar_pedido:
 
                 st.session_state.resultado_pedido = {
                     "folio": folio,
+                    "referencia": pedido_token,
                     "estado": estado,
                     "cliente": nombre_cliente,
                     "lineas": lineas,
@@ -3405,13 +3517,33 @@ if st.session_state.enviar_pedido:
                 st.rerun()
 
             except xmlrpc.client.Fault as error:
+                logger.exception("Odoo rechazó el pedido %s", pedido_token)
                 st.error("Odoo rechazó el pedido. Revisa los datos e inténtalo nuevamente.")
                 with st.expander("Ver detalle técnico"):
                     st.code(error.faultString)
             except xmlrpc.client.ProtocolError as error:
-                st.error(f"Error de comunicación con Odoo. Código HTTP: {error.errcode}")
+                logger.exception("Error HTTP al enviar %s", pedido_token)
+                st.error(
+                    "No se recibió una respuesta válida de Odoo. Puedes volver a "
+                    f"intentarlo sin duplicar el pedido. Referencia: {pedido_token}"
+                )
+                st.caption(f"Código HTTP: {error.errcode}")
+            except TimeoutError:
+                logger.exception("Timeout al enviar %s", pedido_token)
+                st.error(
+                    "Odoo tardó más de 15 segundos. Puedes reintentar: la app "
+                    "buscará primero la misma referencia para evitar duplicados. "
+                    f"Referencia: {pedido_token}"
+                )
             except Exception as error:
-                st.error(f"No se pudo crear el pedido: {error}")
+                logger.exception("Error inesperado al enviar %s", pedido_token)
+                st.error(
+                    f"No se pudo completar el pedido. Referencia: {pedido_token}"
+                )
+                with st.expander("Ver detalle técnico"):
+                    st.code(str(error))
+            finally:
+                st.session_state.envio_en_progreso = False
 
 
 # Segunda escritura del ciclo. Captura cambios realizados durante el render,
