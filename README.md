@@ -31,6 +31,26 @@ Ambas interfaces comparten el mismo cliente, carrito, promociones, notas, conexi
 - Referencia de seguridad para recuperar reintentos sin duplicar pedidos.
 - Conexiones con timeout para evitar pantallas bloqueadas indefinidamente.
 - Clientes recientes al inicio del selector.
+- Alta rápida de clientes en Odoo desde teléfono, tableta o computadora.
+- Movimiento visual accesible, con reducción automática de animaciones cuando el dispositivo lo solicita.
+
+---
+
+## Alta de clientes en campo
+
+El botón `＋ Nuevo cliente` abre un formulario sin abandonar el pedido. Al guardar, el cliente se crea en `res.partner`, se actualiza el catálogo y queda seleccionado automáticamente.
+
+| Campo de la aplicación | Campo de Odoo | Regla |
+|---|---|---|
+| Nombre | `name` | Obligatorio |
+| Correo | `email` | Obligatorio y con formato válido |
+| Dirección | `street` | Obligatorio |
+| Código postal | `zip` | Obligatorio, 5 dígitos |
+| RFC | `vat` | Opcional, 12 o 13 caracteres |
+
+Antes de crear el contacto, la aplicación busca coincidencias por correo o RFC. Esto evita duplicados si se repite un intento por una conexión inestable. Si encuentra un contacto existente, lo habilita como cliente y conserva los datos que ya tenga en Odoo.
+
+El usuario configurado para la conexión necesita permisos de lectura, creación y edición sobre contactos (`res.partner`).
 
 ---
 
@@ -40,20 +60,26 @@ En pantallas de `820 px` o menos se muestra la experiencia móvil.
 
 ### Productos
 
-- Selector de cliente.
+- Selector de cliente que se compacta después de elegirlo para liberar espacio.
+- Alta o cambio de cliente sin abandonar el pedido.
 - Buscador de productos en tiempo real.
+- Botón para limpiar la búsqueda y regresar al catálogo completo.
 - Filtros por categoría y recientes.
 - Botón `+ Agregar` para una venta normal.
 - Botón de regalo para abrir una promoción.
+- Indicador de unidades que ya están en el carrito.
 - Seis productos por página.
 
 ### Carrito
 
 - Cantidad y subtotal por producto.
-- Botones `-` y `+`.
+- Controles táctiles `-`, cantidad y `+` en una sola fila.
+- Botón de eliminación inmediata cuando solo queda una unidad.
 - Edición de precio bajo demanda.
 - Promociones agrupadas visualmente.
+- Promociones rápidas presentadas como botones táctiles amplios.
 - Total y creación del pedido.
+- Revisión final compacta para evitar desplazamiento innecesario.
 
 ### Barra inferior fija
 
@@ -63,6 +89,7 @@ La barra inferior permanece visible durante el desplazamiento y permite cambiar 
 - `Carrito`
 
 Cuando el carrito está abierto también muestra el botón para crear el pedido.
+Al cambiar entre Productos y Carrito, la nueva pantalla vuelve automáticamente al inicio para evitar quedar a mitad del contenido anterior.
 
 ---
 
@@ -166,7 +193,7 @@ El archivo real `.streamlit/secrets.toml` no debe subirse a GitHub.
 Dependencias actuales:
 
 ```txt
-streamlit==1.58.0
+streamlit==1.61.1
 streamlit-keyup==0.3.0
 streamlit-js-eval==1.0.0
 ```
@@ -317,7 +344,7 @@ Cuando actualices el repositorio con **Push origin**, Streamlit Cloud volverá a
 
 ## Solución de problemas
 
-### `ModuleNotFoundError: No module named 'st_keyup'`
+### `ModuleNotFoundError` al iniciar la aplicación
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt

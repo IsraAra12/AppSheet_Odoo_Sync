@@ -16,6 +16,13 @@ import streamlit as st
 from st_keyup import st_keyup
 from streamlit_js_eval import streamlit_js_eval
 
+from rapyvet.customers import (
+    ConflictoClienteError,
+    ValidacionClienteError,
+    alta_cliente_odoo,
+    dominio_clientes_odoo,
+)
+from rapyvet.mobile import calcular_paginacion, cantidad_producto_en_carrito
 from rapyvet.odoo_rpc import crear_proxy_odoo
 from rapyvet.taxes import calcular_impuestos as calcular_impuestos_locales
 
@@ -71,10 +78,18 @@ def inicializar_estado() -> None:
         "desktop_nota_pedido": "",
         "mobile_nota_pedido": "",
         "mobile_tab": "Productos",
+        "mobile_cliente_expandido": True,
+        "mobile_cliente_selector": None,
+        "mobile_panel_transition": "",
+        "mobile_producto_confirmado_id": None,
         "enviar_pedido": False,
         "confirmar_envio": False,
         "envio_en_progreso": False,
         "pedido_token": f"RV-{uuid.uuid4().hex}",
+        "nuevo_cliente_pendiente": False,
+        "nuevo_cliente_version": 0,
+        "alta_cliente_en_progreso": False,
+        "cliente_seleccion_pendiente": None,
         # Estado exclusivo de la interfaz de escritorio clásica.
         "desktop_producto_id": None,
         "desktop_ultimo_producto_id": None,
@@ -100,6 +115,17 @@ def inicializar_estado() -> None:
 
 
 inicializar_estado()
+
+# Un cliente recién creado se selecciona al inicio del siguiente ciclo, antes
+# de que el selector exista. Streamlit no permite cambiar la clave de un widget
+# después de haberlo renderizado en el mismo ciclo.
+if st.session_state.get("cliente_seleccion_pendiente") is not None:
+    st.session_state.cliente_id = int(st.session_state.cliente_seleccion_pendiente)
+    st.session_state.mobile_cliente_selector = int(
+        st.session_state.cliente_seleccion_pendiente
+    )
+    st.session_state.cliente_seleccion_pendiente = None
+    st.session_state.mobile_cliente_expandido = False
 
 # Limpia el formulario de escritorio en el siguiente rerun. Streamlit no
 # permite cambiar la clave de un widget después de haberlo creado en la misma
@@ -142,6 +168,11 @@ st.markdown(
             --rv-promo-text: #7a5200;
             --rv-danger: #b42318;
             --rv-shadow: 0 12px 34px rgba(25, 42, 58, .08);
+            --rv-motion-snap: cubic-bezier(.2, .9, .2, 1);
+            --rv-motion-ui: cubic-bezier(.2, .8, .2, 1);
+            --rv-motion-gentle: cubic-bezier(.22, .7, .22, 1);
+            --rv-motion-stagger: 40ms;
+            --rv-motion-travel: 18px;
             color-scheme: light;
         }
 
@@ -165,13 +196,94 @@ st.markdown(
         }
 
         html {
-            scroll-behavior: smooth;
+            scroll-behavior: auto;
             -webkit-text-size-adjust: 100%;
+        }
+
+        @keyframes rv-enter {
+            from { opacity: 0; transform: scale(.992); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes rv-dialog-enter {
+            from { opacity: 0; transform: translateY(14px) scale(.975); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes rv-status-pulse {
+            0%, 100% { box-shadow: 0 0 0 3px rgba(34, 197, 94, .15); }
+            50% { box-shadow: 0 0 0 6px rgba(34, 197, 94, .04); }
+        }
+
+        @keyframes rv-shimmer {
+            from { transform: translateX(-120%); }
+            to { transform: translateX(240%); }
+        }
+
+        @keyframes rv-card-confirmed {
+            0% { box-shadow: 0 0 0 0 rgba(15, 118, 110, .34); }
+            45% { box-shadow: 0 0 0 5px rgba(15, 118, 110, .12); }
+            100% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0); }
+        }
+
+        @keyframes rv-add-confirmed {
+            0% { background-color: transparent; }
+            35% { background-color: color-mix(in srgb, var(--rv-primary-soft) 72%, transparent); }
+            100% { background-color: transparent; }
+        }
+
+        @keyframes rv-catalog-card-in {
+            from {
+                opacity: .5;
+                transform: translate3d(0, 0, 0) scale(.992);
+            }
+            to {
+                opacity: 1;
+                transform: translate3d(0, 0, 0) scale(1);
+            }
+        }
+
+        @keyframes rv-catalog-scan {
+            0% { opacity: 0; transform: translate3d(-115%, 0, 0); }
+            22% { opacity: .7; }
+            100% { opacity: 0; transform: translate3d(235%, 0, 0); }
+        }
+
+        @keyframes rv-result-ready {
+            0% { opacity: 0; transform: translate3d(0, -3px, 0); }
+            100% { opacity: 1; transform: translate3d(0, 0, 0); }
+        }
+
+        @keyframes rv-result-dot {
+            0%, 100% { transform: scale(.78); opacity: .55; }
+            50% { transform: scale(1); opacity: 1; }
+        }
+
+        @keyframes rv-panel-from-right {
+            from {
+                opacity: .64;
+                filter: blur(1px);
+                transform: translate3d(10px, 0, 0);
+            }
+            to { opacity: 1; filter: blur(0); transform: translate3d(0, 0, 0); }
+        }
+
+        @keyframes rv-panel-from-left {
+            from {
+                opacity: .64;
+                filter: blur(1px);
+                transform: translate3d(-10px, 0, 0);
+            }
+            to { opacity: 1; filter: blur(0); transform: translate3d(0, 0, 0); }
         }
 
         [data-testid="stAppViewContainer"] {
             background: var(--rv-bg);
             color: var(--rv-text);
+        }
+
+        [data-testid="stMain"] {
+            overflow-anchor: none;
         }
 
         [data-testid="stHeader"] {
@@ -182,7 +294,7 @@ st.markdown(
          * streamlit-js-eval se renderiza dentro de un iframe invisible.
          * Algunas versiones de Streamlit reservan cerca de 150 px para ese
          * componente aunque no muestre contenido. Colapsamos exclusivamente
-         * ese iframe sin afectar el buscador st_keyup ni otros componentes.
+         * ese iframe sin afectar los controles nativos ni otros componentes.
          */
         iframe[title*="streamlit_js_eval"],
         iframe[src*="streamlit_js_eval"] {
@@ -216,7 +328,8 @@ st.markdown(
             overflow: hidden !important;
         }
 
-        [data-testid="stAppViewBlockContainer"] {
+        [data-testid="stAppViewBlockContainer"],
+        [data-testid="stMainBlockContainer"] {
             max-width: 1480px;
             padding-top: .15rem;
             padding-bottom: 3rem;
@@ -239,6 +352,7 @@ st.markdown(
             border-radius: 1rem;
             background: var(--rv-surface);
             box-shadow: var(--rv-shadow);
+            animation: rv-enter .38s cubic-bezier(.2, .8, .2, 1) both;
         }
 
         .rv-brand {
@@ -301,6 +415,7 @@ st.markdown(
             background: #22c55e;
             box-shadow: 0 0 0 3px rgba(34, 197, 94, .15);
             vertical-align: .02rem;
+            animation: rv-status-pulse 2.2s ease-in-out infinite;
         }
 
         div[data-testid="stVerticalBlockBorderWrapper"] {
@@ -308,6 +423,85 @@ st.markdown(
             border-radius: 1rem;
             background: var(--rv-surface);
             box-shadow: 0 4px 16px rgba(20, 35, 50, .04);
+            transition: border-color .2s ease, box-shadow .2s ease,
+                transform .2s ease;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+            border-color: color-mix(in srgb, var(--rv-primary) 36%, var(--rv-border));
+            box-shadow: 0 10px 28px rgba(20, 35, 50, .07);
+        }
+
+        [data-testid="stDialog"] > div {
+            animation: rv-dialog-enter .26s cubic-bezier(.2, .8, .2, 1) both;
+        }
+
+        [data-testid="stToast"] {
+            animation: rv-dialog-enter .24s cubic-bezier(.2, .8, .2, 1) both;
+        }
+
+        .rv-new-client-intro {
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+            margin: -.15rem 0 .9rem;
+            padding: .78rem .85rem;
+            border: 1px solid color-mix(in srgb, var(--rv-primary) 28%, var(--rv-border));
+            border-radius: .95rem;
+            background: linear-gradient(135deg, var(--rv-primary-soft), var(--rv-surface));
+            animation: rv-enter .32s cubic-bezier(.2, .8, .2, 1) both;
+        }
+
+        .rv-new-client-icon {
+            display: grid;
+            flex: 0 0 2.45rem;
+            width: 2.45rem;
+            height: 2.45rem;
+            place-items: center;
+            border-radius: .8rem;
+            background: var(--rv-primary);
+            color: #fff;
+            font-size: 1.25rem;
+            font-weight: 950;
+        }
+
+        .rv-new-client-intro strong {
+            font-size: .9rem;
+        }
+
+        .rv-new-client-intro p {
+            margin: .1rem 0 0;
+            color: var(--rv-muted) !important;
+            font-size: .72rem;
+            line-height: 1.4;
+        }
+
+        .rv-client-selected {
+            display: flex;
+            align-items: flex-start;
+            gap: .52rem;
+            margin-top: .5rem;
+            padding: .58rem .65rem;
+            border-radius: .78rem;
+            background: var(--rv-primary-soft);
+            animation: rv-enter .26s ease both;
+        }
+
+        .rv-client-selected-icon {
+            line-height: 1.2;
+        }
+
+        .rv-client-selected strong,
+        .rv-client-selected p {
+            margin: 0;
+        }
+
+        .rv-client-selected strong { font-size: .75rem; }
+        .rv-client-selected p {
+            margin-top: .08rem;
+            color: var(--rv-muted) !important;
+            font-size: .66rem;
+            line-height: 1.35;
         }
 
         .rv-section-title {
@@ -329,6 +523,7 @@ st.markdown(
             padding: .55rem .62rem .24rem;
             border-radius: .78rem;
             background: linear-gradient(145deg, var(--rv-surface-soft), var(--rv-surface));
+            animation: rv-enter .28s cubic-bezier(.2, .8, .2, 1) both;
         }
 
         .rv-product-code {
@@ -385,6 +580,97 @@ st.markdown(
             line-height: 1.45;
         }
 
+        .rv-mobile-progress {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: .38rem;
+            margin: 0 0 .72rem;
+            padding: .28rem;
+            border: 1px solid var(--rv-border);
+            border-radius: 1rem;
+            background: var(--rv-surface);
+            box-shadow: 0 8px 24px rgba(20, 35, 50, .06);
+            animation: rv-enter .32s cubic-bezier(.2, .8, .2, 1) both;
+        }
+
+        .rv-mobile-progress-step {
+            display: flex;
+            min-width: 0;
+            align-items: center;
+            gap: .38rem;
+            padding: .42rem .38rem;
+            border-radius: .72rem;
+            color: var(--rv-muted) !important;
+            font-size: .65rem;
+            font-weight: 850;
+            transition: color .22s cubic-bezier(.2, .8, .2, 1),
+                background-color .22s cubic-bezier(.2, .8, .2, 1),
+                transform .22s cubic-bezier(.2, .8, .2, 1);
+        }
+
+        .rv-mobile-progress-step span {
+            display: grid;
+            flex: 0 0 1.35rem;
+            width: 1.35rem;
+            height: 1.35rem;
+            place-items: center;
+            border: 1px solid var(--rv-border);
+            border-radius: .45rem;
+            background: var(--rv-surface-soft);
+            font-size: .61rem;
+            font-weight: 950;
+        }
+
+        .rv-mobile-progress-step.is-active {
+            background: var(--rv-primary-soft);
+            color: var(--rv-primary) !important;
+        }
+
+        .rv-mobile-progress-step.is-active span,
+        .rv-mobile-progress-step.is-done span {
+            border-color: var(--rv-primary);
+            background: var(--rv-primary);
+            color: #fff !important;
+        }
+
+        .rv-mobile-section-heading {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr);
+            gap: .65rem;
+            align-items: start;
+            margin: .08rem 0 .7rem;
+        }
+
+        .rv-mobile-step-number {
+            display: grid;
+            width: 2.25rem;
+            height: 2.25rem;
+            place-items: center;
+            border-radius: .75rem;
+            background: linear-gradient(145deg, var(--rv-primary), #0891b2);
+            color: #fff !important;
+            box-shadow: 0 7px 18px rgba(15, 118, 110, .22);
+            font-size: .78rem;
+            font-weight: 950;
+        }
+
+        .rv-mobile-section-eyebrow {
+            margin: .02rem 0 .05rem;
+            color: var(--rv-primary) !important;
+            font-size: .61rem;
+            font-weight: 950;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+
+        .rv-mobile-section-heading .rv-mobile-page-title {
+            margin: 0;
+        }
+
+        .rv-mobile-section-heading .rv-mobile-page-copy {
+            margin: .12rem 0 0;
+        }
+
         .rv-mobile-client-label,
         .rv-mobile-filter-label {
             margin: 0 0 .28rem;
@@ -395,12 +681,57 @@ st.markdown(
             text-transform: uppercase;
         }
 
+        .rv-mobile-client-compact {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr);
+            gap: .55rem;
+            align-items: start;
+            padding: .1rem .05rem .55rem;
+        }
+
+        .rv-mobile-client-check {
+            display: grid;
+            width: 1.65rem;
+            height: 1.65rem;
+            place-items: center;
+            border-radius: .55rem;
+            background: var(--rv-primary-soft);
+            color: var(--rv-primary) !important;
+            font-size: .78rem;
+            font-weight: 950;
+        }
+
+        .rv-mobile-client-compact strong {
+            display: block;
+            overflow: hidden;
+            font-size: .82rem;
+            line-height: 1.25;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .rv-mobile-client-compact p {
+            overflow: hidden;
+            margin: .1rem 0 0;
+            color: var(--rv-muted) !important;
+            font-size: .67rem;
+            line-height: 1.3;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         .rv-mobile-product-row {
             display: grid;
             grid-template-columns: minmax(0, 1fr) auto;
             gap: .16rem .8rem;
             align-items: center;
             padding: .05rem .02rem .45rem;
+        }
+
+        .rv-mobile-cart-status {
+            display: flex;
+            align-items: flex-end;
+            min-height: 1.75rem;
         }
 
         .rv-mobile-product-row .rv-product-code {
@@ -427,6 +758,21 @@ st.markdown(
             font-weight: 950;
             white-space: nowrap;
         }
+
+        .rv-in-cart-chip {
+            display: inline-flex;
+            width: max-content;
+            margin-top: .34rem;
+            padding: .14rem .42rem;
+            border-radius: 999px;
+            background: var(--rv-primary-soft);
+            color: var(--rv-primary) !important;
+            font-size: .61rem;
+            font-weight: 900;
+        }
+
+        .rv-mobile-cart-status .rv-in-cart-chip { margin-top: 0; }
+        .rv-in-cart-chip-placeholder { visibility: hidden; }
 
         .rv-results {
             margin: .42rem 0 .35rem;
@@ -503,6 +849,7 @@ st.markdown(
             padding: .8rem .88rem;
             border-radius: .95rem;
             background: var(--rv-primary-soft);
+            animation: rv-enter .25s ease both;
         }
 
         .rv-total-label {
@@ -548,11 +895,61 @@ st.markdown(
         }
 
         .rv-loading {
+            position: relative;
+            overflow: hidden;
             max-width: 22rem;
             margin: 25vh auto 0;
             padding: 1rem;
             color: var(--rv-muted);
             text-align: center;
+        }
+
+        .rv-review-metrics,
+        .rv-result-metrics {
+            display: grid;
+            gap: .5rem;
+            margin: .65rem 0 .8rem;
+        }
+
+        .rv-review-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .rv-result-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+        .rv-mini-metric {
+            min-width: 0;
+            padding: .62rem .66rem;
+            border: 1px solid var(--rv-border);
+            border-radius: .78rem;
+            background: var(--rv-surface-soft);
+        }
+
+        .rv-mini-metric-label {
+            overflow: hidden;
+            margin: 0;
+            color: var(--rv-muted) !important;
+            font-size: .6rem;
+            font-weight: 850;
+            line-height: 1.2;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .rv-mini-metric-value {
+            overflow: hidden;
+            margin: .14rem 0 0;
+            font-size: 1rem;
+            font-weight: 950;
+            line-height: 1.15;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .rv-loading::after {
+            position: absolute;
+            inset: 0;
+            width: 45%;
+            background: linear-gradient(90deg, transparent, var(--rv-primary-soft), transparent);
+            content: "";
+            animation: rv-shimmer 1.25s ease-in-out infinite;
         }
 
         .rv-mobile-bottom-summary {
@@ -581,6 +978,17 @@ st.markdown(
             min-height: 2.65rem;
             border-radius: .72rem;
             font-weight: 850;
+            transition: transform .16s ease, box-shadow .16s ease,
+                background-color .16s ease, border-color .16s ease;
+        }
+
+        div[data-testid="stButton"] > button:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 7px 18px rgba(15, 118, 110, .14);
+        }
+
+        div[data-testid="stButton"] > button:active:not(:disabled) {
+            transform: translateY(0) scale(.985);
         }
 
         button[kind="primary"] {
@@ -601,13 +1009,123 @@ st.markdown(
         /* El key de st.container crea la clase st-key-... de forma estable. */
         .st-key-rv_mobile_search_area {
             position: sticky;
-            top: 0;
+            top: .35rem;
             z-index: 80;
-            margin: 0 -.12rem .55rem;
-            padding: .55rem .12rem .45rem;
-            background: color-mix(in srgb, var(--rv-bg) 94%, transparent);
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
+            margin: 0 0 .65rem;
+            padding: .62rem;
+            border: 1px solid color-mix(in srgb, var(--rv-primary) 20%, var(--rv-border));
+            border-radius: 1rem;
+            background: color-mix(in srgb, var(--rv-surface) 96%, transparent);
+            box-shadow: 0 10px 28px rgba(20, 35, 50, .09);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            contain: layout paint;
+            transition: border-color .22s cubic-bezier(.2, .8, .2, 1),
+                box-shadow .22s cubic-bezier(.2, .8, .2, 1);
+        }
+
+        .st-key-rv_mobile_search_area:focus-within {
+            border-color: color-mix(in srgb, var(--rv-primary) 62%, var(--rv-border));
+            box-shadow: 0 12px 30px rgba(15, 118, 110, .13);
+        }
+
+        .st-key-rv_mobile_search_area iframe:not([title*="streamlit_js_eval"]) {
+            border-radius: .72rem;
+            transition: opacity .18s ease, transform .18s ease;
+        }
+
+        .st-key-rv_mobile_catalog_results {
+            position: relative;
+            min-height: 7rem;
+            overflow: clip;
+            isolation: isolate;
+        }
+
+        .st-key-rv_mobile_catalog_surface {
+            min-height: 22rem;
+            padding-bottom: 3.5rem;
+            overflow-anchor: none;
+        }
+
+        .st-key-rv_mobile_catalog_results::after {
+            position: absolute;
+            z-index: 6;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            width: 34%;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                color-mix(in srgb, var(--rv-primary-soft) 58%, transparent),
+                transparent
+            );
+            content: "";
+            pointer-events: none;
+            animation: rv-catalog-scan .48s cubic-bezier(.2, .8, .2, 1) both;
+        }
+
+        .rv-motion-result-meta {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: .5rem;
+            margin: .12rem 0 .42rem;
+            color: var(--rv-muted) !important;
+            font-size: .69rem;
+            font-weight: 820;
+            overflow: hidden;
+            animation: rv-result-ready .2s ease-out both;
+        }
+
+        .rv-motion-result-meta::after {
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: 32%;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                color-mix(in srgb, var(--rv-primary-soft) 76%, transparent),
+                transparent
+            );
+            content: "";
+            pointer-events: none;
+            animation: rv-catalog-scan .44s var(--rv-motion-ui) both;
+        }
+
+        .st-key-rv_mobile_panel_motion_to_cart {
+            animation: rv-panel-from-right .28s var(--rv-motion-ui) both;
+        }
+
+        .st-key-rv_mobile_panel_motion_to_products {
+            animation: rv-panel-from-left .28s var(--rv-motion-ui) both;
+        }
+
+        [class*="st-key-rv_mobile_panel_motion_"] {
+            min-height: max(48rem, calc(100dvh + 18rem));
+        }
+
+        .rv-mobile-product-feedback.is-confirmed {
+            border-radius: .72rem;
+            animation: rv-add-confirmed .72s var(--rv-motion-ui) both;
+        }
+
+        .rv-motion-result-state {
+            display: inline-flex;
+            align-items: center;
+            gap: .3rem;
+            color: var(--rv-primary) !important;
+            white-space: nowrap;
+        }
+
+        .rv-motion-result-state::before {
+            width: .38rem;
+            height: .38rem;
+            border-radius: 999px;
+            background: var(--rv-primary);
+            content: "";
+            animation: rv-result-dot .8s ease-in-out 1;
         }
 
         .st-key-rv_mobile_bottom_bar {
@@ -639,13 +1157,23 @@ st.markdown(
             padding: .74rem !important;
         }
 
+        .st-key-rv_mobile_client_card [data-testid="stVerticalBlock"],
+        .st-key-rv_mobile_search_area [data-testid="stVerticalBlock"] {
+            gap: .48rem;
+        }
+
+        .st-key-rv_mobile_client_card div[data-testid="stButton"] > button {
+            min-height: 2.55rem;
+        }
+
         [class*="st-key-rv_mobile_product_card_"] > div,
-        .st-key-rv_mobile_cart_card > div {
+        [class*="st-key-rv_mobile_cart_card_"] > div {
             padding: .68rem !important;
         }
 
         @media (max-width: 820px) {
-            [data-testid="stAppViewBlockContainer"] {
+            [data-testid="stAppViewBlockContainer"],
+            [data-testid="stMainBlockContainer"] {
                 max-width: 100%;
                 padding: .12rem .62rem 9.4rem;
             }
@@ -653,11 +1181,16 @@ st.markdown(
             [data-testid="stToolbar"] { display: none !important; }
             [data-testid="stHeader"] { height: 0 !important; }
 
-            /* Streamlit apila columnas en pantallas angostas. En estos tres
+            /* Streamlit apila columnas en pantallas angostas. En estos
                controles la disposición horizontal ahorra varios gestos y
                mantiene juntas las acciones relacionadas. */
             .st-key-rv_mobile_client_card [data-testid="stHorizontalBlock"],
             [class*="st-key-rv_mobile_product_card_"] [data-testid="stHorizontalBlock"],
+            [class*="st-key-rv_mobile_cart_card_"] [data-testid="stHorizontalBlock"],
+            .st-key-rv_mobile_cart_header [data-testid="stHorizontalBlock"],
+            .st-key-rv_mobile_pagination [data-testid="stHorizontalBlock"],
+            .st-key-rv_mobile_search_controls [data-testid="stHorizontalBlock"],
+            .st-key-rv_mobile_filter_controls [data-testid="stHorizontalBlock"],
             .st-key-rv_mobile_bottom_bar [data-testid="stHorizontalBlock"] {
                 flex-wrap: nowrap !important;
                 align-items: stretch !important;
@@ -667,6 +1200,16 @@ st.markdown(
                 > [data-testid="stColumn"],
             [class*="st-key-rv_mobile_product_card_"] [data-testid="stHorizontalBlock"]
                 > [data-testid="stColumn"],
+            [class*="st-key-rv_mobile_cart_card_"] [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"],
+            .st-key-rv_mobile_cart_header [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"],
+            .st-key-rv_mobile_pagination [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"],
+            .st-key-rv_mobile_search_controls [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"],
+            .st-key-rv_mobile_filter_controls [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"],
             .st-key-rv_mobile_bottom_bar [data-testid="stHorizontalBlock"]
                 > [data-testid="stColumn"] {
                 width: auto !important;
@@ -674,18 +1217,82 @@ st.markdown(
                 flex: 1 1 0 !important;
             }
 
-            .st-key-rv_mobile_client_card [data-testid="stHorizontalBlock"]
-                > [data-testid="stColumn"]:last-child,
             [class*="st-key-rv_mobile_product_card_"] [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"]:last-child,
+            .st-key-rv_mobile_cart_header [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"]:last-child {
+                flex: 0 0 5rem !important;
+            }
+
+            .st-key-rv_mobile_search_controls [data-testid="stHorizontalBlock"]
                 > [data-testid="stColumn"]:last-child {
                 flex: 0 0 3.25rem !important;
+            }
+
+            [class*="st-key-rv_mobile_product_card_"] {
+                border-left: 3px solid color-mix(in srgb, var(--rv-primary) 78%, transparent);
+                transform: translateZ(0);
+                animation: rv-catalog-card-in .26s cubic-bezier(.2, .8, .2, 1) both;
+                transition: border-color .2s cubic-bezier(.2, .8, .2, 1),
+                    box-shadow .2s cubic-bezier(.2, .8, .2, 1),
+                    transform .2s cubic-bezier(.2, .8, .2, 1);
+                will-change: transform, opacity;
+            }
+
+            .st-key-rv_mobile_catalog_results
+                [class*="st-key-rv_mobile_product_card_"]:nth-child(2) { animation-delay: 25ms; }
+            .st-key-rv_mobile_catalog_results
+                [class*="st-key-rv_mobile_product_card_"]:nth-child(3) { animation-delay: 50ms; }
+            .st-key-rv_mobile_catalog_results
+                [class*="st-key-rv_mobile_product_card_"]:nth-child(4) { animation-delay: 75ms; }
+            .st-key-rv_mobile_catalog_results
+                [class*="st-key-rv_mobile_product_card_"]:nth-child(5) { animation-delay: 100ms; }
+            .st-key-rv_mobile_catalog_results
+                [class*="st-key-rv_mobile_product_card_"]:nth-child(6) { animation-delay: 125ms; }
+
+            [class*="st-key-rv_mobile_product_card_"].rv-mobile-card-confirmed {
+                border-color: var(--rv-primary) !important;
+                animation: rv-card-confirmed .85s ease both;
+            }
+
+            [class*="st-key-rv_mobile_product_card_"] > div {
+                background: linear-gradient(145deg, var(--rv-surface), var(--rv-surface-soft));
+            }
+
+            [class*="st-key-rv_mobile_product_card_"] .rv-product-code {
+                width: max-content;
+                padding: .14rem .4rem;
+                border-radius: 999px;
+                background: var(--rv-primary-soft);
+            }
+
+            .st-key-rv_mobile_pagination [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"]:nth-child(2) {
+                flex: 0 0 4.5rem !important;
             }
 
             .rv-mobile-appbar {
                 margin-bottom: .55rem;
                 padding: .62rem .68rem;
+                border-color: transparent;
                 border-radius: .92rem;
-                box-shadow: 0 8px 24px rgba(0, 0, 0, .12);
+                background: linear-gradient(128deg, #0f766e 0%, #075985 100%);
+                box-shadow: 0 10px 28px rgba(4, 85, 104, .22);
+            }
+
+            .rv-mobile-appbar .rv-brand-title,
+            .rv-mobile-appbar .rv-brand-copy,
+            .rv-mobile-appbar .rv-pill {
+                color: #fff !important;
+            }
+
+            .rv-mobile-appbar .rv-brand-icon {
+                background: rgba(255,255,255,.17);
+            }
+
+            .rv-mobile-appbar .rv-pill {
+                border-color: rgba(255,255,255,.24);
+                background: rgba(255,255,255,.13);
             }
 
             .rv-brand-icon {
@@ -710,7 +1317,24 @@ st.markdown(
             [data-testid="stDialog"] > div {
                 width: calc(100vw - .7rem) !important;
                 max-width: calc(100vw - .7rem) !important;
+                box-sizing: border-box !important;
                 border-radius: 1rem !important;
+            }
+
+            [data-testid="stDialog"] {
+                overflow-x: hidden !important;
+            }
+
+            .rv-result-metrics {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .rv-mini-metric {
+                padding: .55rem .5rem;
+            }
+
+            .rv-mini-metric-value {
+                font-size: .9rem;
             }
 
             input, textarea, [data-baseweb="select"] {
@@ -956,6 +1580,22 @@ st.markdown(
                 font-size: .72rem;
                 font-weight: 950;
                 white-space: nowrap;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            html { scroll-behavior: auto; }
+
+            *, *::before, *::after {
+                animation-duration: .001ms !important;
+                animation-iteration-count: 1 !important;
+                scroll-behavior: auto !important;
+                transition-duration: .001ms !important;
+            }
+
+            div[data-testid="stButton"] > button:hover:not(:disabled),
+            div[data-testid="stButton"] > button:active:not(:disabled) {
+                transform: none;
             }
         }
     </style>
@@ -1287,9 +1927,18 @@ def cargar_datos_odoo(
         password,
         "res.partner",
         "search_read",
-        [[("customer_rank", ">", 0), ("active", "=", True)]],
+        [dominio_clientes_odoo()],
         {
-            "fields": ["id", "name", "city", "vat", "email", "phone"],
+            "fields": [
+                "id",
+                "name",
+                "street",
+                "city",
+                "zip",
+                "vat",
+                "email",
+                "phone",
+            ],
             "order": "name asc",
         },
     )
@@ -1313,7 +1962,15 @@ def cargar_datos_odoo(
         cliente["_busqueda"] = normalizar(
             " ".join(
                 str(cliente.get(campo) or "")
-                for campo in ("name", "city", "vat", "email", "phone")
+                for campo in (
+                    "name",
+                    "street",
+                    "city",
+                    "zip",
+                    "vat",
+                    "email",
+                    "phone",
+                )
             )
         )
 
@@ -1609,6 +2266,8 @@ def agregar_venta_rapida(producto_id: int) -> None:
         st.session_state.carrito.append(crear_linea(producto, 1, precio_lista))
 
     registrar_reciente(int(producto_id))
+    if ES_MOVIL:
+        st.session_state.mobile_producto_confirmado_id = int(producto_id)
     # Conserva la búsqueda actual para poder seguir agregando productos
     # relacionados sin volver a escribir el término.
     st.session_state.notificacion_pendiente = {
@@ -1661,24 +2320,45 @@ def cambiar_cantidad(linea_id: str, diferencia: int) -> None:
 
 
 def eliminar_linea(linea_id: str) -> None:
+    eliminada = next(
+        (
+            linea
+            for linea in st.session_state.carrito
+            if str(linea["linea_id"]) == str(linea_id)
+        ),
+        None,
+    )
     st.session_state.carrito = [
         linea
         for linea in st.session_state.carrito
         if str(linea["linea_id"]) != str(linea_id)
     ]
+    if eliminada:
+        st.session_state.notificacion_pendiente = {
+            "texto": f"{eliminada.get('nombre_producto') or 'Producto'} eliminado",
+            "icono": "🗑️",
+        }
 
 
 def eliminar_promocion(grupo_id: str) -> None:
-    ids = [
-        str(linea["linea_id"])
-        for linea in st.session_state.carrito
-        if str(linea.get("grupo_promocion")) == str(grupo_id)
-    ]
+    eliminada = next(
+        (
+            linea
+            for linea in st.session_state.carrito
+            if str(linea.get("grupo_promocion")) == str(grupo_id)
+        ),
+        None,
+    )
     st.session_state.carrito = [
         linea
         for linea in st.session_state.carrito
         if str(linea.get("grupo_promocion")) != str(grupo_id)
     ]
+    if eliminada:
+        st.session_state.notificacion_pendiente = {
+            "texto": f"Promoción de {eliminada.get('nombre_producto') or 'producto'} eliminada",
+            "icono": "🗑️",
+        }
 
 
 def vaciar_carrito() -> None:
@@ -1693,6 +2373,9 @@ def reiniciar_pedido() -> None:
     st.session_state.nota_pedido = ""
     st.session_state.desktop_nota_pedido = ""
     st.session_state.mobile_nota_pedido = ""
+    st.session_state.mobile_tab = "Productos"
+    st.session_state.mobile_cliente_expandido = True
+    st.session_state.mobile_cliente_selector = None
     st.session_state.confirmar_envio = False
     st.session_state.envio_en_progreso = False
     st.session_state.pedido_token = f"RV-{uuid.uuid4().hex}"
@@ -1736,14 +2419,15 @@ def resetear_catalogo() -> None:
 
 
 def limpiar_busqueda_catalogo() -> None:
-    """Limpia el buscador y fuerza un campo nuevo en el componente keyup."""
+    """Limpia el buscador móvil y vuelve a la primera página."""
     st.session_state.busqueda_pos = ""
     st.session_state.busqueda_widget_version = (
-        int(st.session_state.busqueda_widget_version) + 1
+        int(st.session_state.get("busqueda_widget_version", 0)) + 1
     )
     st.session_state.pagina_catalogo = 0
 
-    # Elimina estados antiguos del componente para no acumular claves en la sesión.
+    # El cambio de versión monta un campo vacío sin intentar imponer un valor
+    # sobre el componente que el usuario está editando.
     for clave in list(st.session_state.keys()):
         if str(clave).startswith("busqueda_pos_input_"):
             del st.session_state[clave]
@@ -1755,8 +2439,214 @@ def solicitar_envio() -> None:
     st.session_state.confirmar_envio = True
 
 
+def solicitar_nuevo_cliente() -> None:
+    if st.session_state.get("alta_cliente_en_progreso", False):
+        return
+    st.session_state.nuevo_cliente_pendiente = True
+
+
+def seleccionar_cliente_movil() -> None:
+    """Compacta el selector después de elegir un cliente válido."""
+
+    cliente_id = st.session_state.get("mobile_cliente_selector")
+    st.session_state.cliente_id = int(cliente_id) if cliente_id is not None else None
+    st.session_state.mobile_cliente_expandido = not bool(cliente_id)
+
+
+def editar_cliente_movil() -> None:
+    st.session_state.mobile_cliente_selector = st.session_state.get("cliente_id")
+    st.session_state.mobile_cliente_expandido = True
+
+
+def habilitar_estabilidad_viewport_movil() -> None:
+    """Conserva la tarjeta tocada en el mismo sitio durante cada rerun."""
+
+    script_source = r"""
+(() => {
+  if (window.__rvViewportStabilityBound) return;
+  window.__rvViewportStabilityBound = true;
+
+  const cancelLock = () => {
+    if (window.__rvViewportLock) window.__rvViewportLock.until = 0;
+  };
+
+  const keepStable = (now) => {
+    const lock = window.__rvViewportLock;
+    if (!lock || now > lock.until) {
+      window.__rvViewportLockFrame = null;
+      return;
+    }
+
+    const scroller = document.querySelector('[data-testid="stMain"]');
+    if (scroller) {
+      let desired = lock.scrollTop;
+      if (lock.anchorClass) {
+        const anchor = document.querySelector(
+          '.' + CSS.escape(lock.anchorClass)
+        );
+        if (anchor) {
+          desired = scroller.scrollTop
+            + anchor.getBoundingClientRect().top
+            - lock.anchorTop;
+        }
+      }
+
+      const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      desired = Math.max(0, Math.min(maxTop, desired));
+      if (Math.abs(scroller.scrollTop - desired) > 0.5) {
+        scroller.scrollTop = desired;
+      }
+    }
+
+    window.__rvViewportLockFrame = window.requestAnimationFrame(keepStable);
+  };
+
+  document.addEventListener('pointerdown', (event) => {
+    const button = event.target.closest?.('button, [role="button"]');
+    if (!button) {
+      cancelLock();
+      return;
+    }
+
+    const scroller = document.querySelector('[data-testid="stMain"]');
+    if (!scroller) return;
+
+    const candidate = button.closest('[class*="st-key-rv_mobile_"]');
+    const isFixedNavigation = candidate?.classList.contains(
+      'st-key-rv_mobile_bottom_bar'
+    );
+    const anchor = candidate && scroller.contains(candidate) && !isFixedNavigation
+      ? candidate
+      : null;
+    const anchorClass = anchor
+      ? [...anchor.classList].find((name) => name.startsWith('st-key-rv_mobile_'))
+      : null;
+
+    window.__rvViewportLock = {
+      scrollTop: scroller.scrollTop,
+      anchorClass: anchorClass || null,
+      anchorTop: anchor ? anchor.getBoundingClientRect().top : 0,
+      until: performance.now() + 2400,
+    };
+
+    if (!window.__rvViewportLockFrame) {
+      window.__rvViewportLockFrame = window.requestAnimationFrame(keepStable);
+    }
+  }, true);
+
+  document.addEventListener('wheel', cancelLock, {
+    passive: true,
+    capture: true,
+  });
+  document.addEventListener('touchmove', cancelLock, {
+    passive: true,
+    capture: true,
+  });
+})();
+"""
+
+    streamlit_js_eval(
+        js_expressions=(
+            "(() => { try {"
+            "const host = window.parent;"
+            "if (host.__rvViewportStabilityBound) return true;"
+            f"host.eval({json.dumps(script_source)});"
+            "return true;"
+            "} catch (_) { return false; } })()"
+        ),
+        want_output=False,
+        key="rv_mobile_viewport_stability",
+    )
+
+
+def habilitar_motion_busqueda_movil() -> None:
+    """Enfoca la búsqueda con un desplazamiento breve, único y predecible."""
+
+    version = int(st.session_state.get("busqueda_widget_version", 0))
+    streamlit_js_eval(
+        js_expressions=(
+            "(() => { try {"
+            "const host = window.parent;"
+            "const doc = host.document;"
+            "const bind = () => {"
+            "const frame = doc.querySelector('iframe[title=\"st_keyup.st_keyup\"]');"
+            "const scroller = doc.querySelector('[data-testid=\"stMain\"]');"
+            "const area = doc.querySelector('.st-key-rv_mobile_search_area');"
+            "const input = frame?.contentDocument?.querySelector('#input_box');"
+            "if (!frame || !scroller || !area || !input || input.dataset.rvMotionBound) return;"
+            "input.dataset.rvMotionBound = 'true';"
+            "const keepPinned = () => {"
+            # Mantiene el ancla durante todo el ciclo del componente y del
+            # fragmento; el plazo se renueva con cada tecla.
+            "host.__rvSearchPinUntil = host.performance.now() + 2800;"
+            "if (host.__rvSearchPinFrame) return;"
+            "const pinStep = (now) => {"
+            "if (now > (host.__rvSearchPinUntil || 0)) {"
+            "host.__rvSearchPinFrame = null;"
+            "return;"
+            "}"
+            "const liveScroller = doc.querySelector('[data-testid=\"stMain\"]');"
+            "const liveArea = doc.querySelector('.st-key-rv_mobile_search_area');"
+            "if (liveScroller && liveArea) {"
+            "const desired = Math.max(0, liveScroller.scrollTop "
+            "+ liveArea.getBoundingClientRect().top "
+            "- liveScroller.getBoundingClientRect().top - 6);"
+            "if (Math.abs(desired - liveScroller.scrollTop) > 1) liveScroller.scrollTop = desired;"
+            "}"
+            "host.__rvSearchPinFrame = host.requestAnimationFrame(pinStep);"
+            "};"
+            "host.__rvSearchPinFrame = host.requestAnimationFrame(pinStep);"
+            "};"
+            "input.addEventListener('pointerdown', (event) => {"
+            "if (event.button !== undefined && event.button !== 0) return;"
+            "if (input === frame.contentDocument.activeElement) return;"
+            "event.preventDefault();"
+            "try { input.focus({preventScroll: true}); } catch (_) { input.focus(); }"
+            "const start = scroller.scrollTop;"
+            "const top = Math.max(0, start + area.getBoundingClientRect().top "
+            "- scroller.getBoundingClientRect().top - 6);"
+            "const distance = top - start;"
+            "const reduce = host.matchMedia('(prefers-reduced-motion: reduce)').matches;"
+            "if (reduce || Math.abs(distance) < 3) { scroller.scrollTop = top; return; }"
+            "if (host.__rvSearchFocusFrame) host.cancelAnimationFrame(host.__rvSearchFocusFrame);"
+            "const startedAt = host.performance.now();"
+            "const step = (now) => {"
+            "const progress = Math.min(1, (now - startedAt) / 260);"
+            "const eased = 1 - Math.pow(1 - progress, 3);"
+            "scroller.scrollTop = start + distance * eased;"
+            "if (progress < 1) host.__rvSearchFocusFrame = host.requestAnimationFrame(step);"
+            "else host.__rvSearchFocusFrame = null;"
+            "};"
+            "host.__rvSearchFocusFrame = host.requestAnimationFrame(step);"
+            "}, {passive: false});"
+            "input.addEventListener('keyup', keepPinned);"
+            "};"
+            "bind();"
+            "host.requestAnimationFrame(bind);"
+            "host.setTimeout(bind, 160);"
+            "host.setTimeout(bind, 420);"
+            "return true;"
+            "} catch (_) { return false; } })()"
+        ),
+        want_output=False,
+        key=f"rv_mobile_search_motion_{version}",
+    )
+
+
+def cambiar_pagina_catalogo(diferencia: int) -> None:
+    st.session_state.pagina_catalogo = max(
+        0,
+        int(st.session_state.get("pagina_catalogo", 0)) + int(diferencia),
+    )
+
+
 def cambiar_tab_movil(destino: str) -> None:
-    st.session_state.mobile_tab = destino
+    destino = str(destino)
+    if str(st.session_state.get("mobile_tab")) != destino:
+        st.session_state.mobile_panel_transition = (
+            "to_cart" if destino == "Carrito" else "to_products"
+        )
+        st.session_state.mobile_tab = destino
 
 
 # =============================================================================
@@ -1778,8 +2668,24 @@ productos_por_id = {int(p["id"]): p for p in lista_productos}
 impuestos_por_id = {int(t["id"]): t for t in lista_impuestos}
 
 if not clientes_por_id:
-    st.warning("No se encontraron clientes activos en Odoo.")
-    st.stop()
+    st.info(
+        "Todavía no hay clientes disponibles. Usa **＋ Nuevo cliente** para "
+        "registrar el primero directamente en Odoo."
+    )
+
+# Una selección guardada puede dejar de existir después de actualizar Odoo.
+# Se limpia antes de crear el selector para evitar claves inválidas y permitir
+# que el alta rápida siga funcionando incluso con un catálogo inicialmente vacío.
+cliente_guardado = st.session_state.get("cliente_id")
+if cliente_guardado is not None:
+    try:
+        cliente_guardado = int(cliente_guardado)
+    except (TypeError, ValueError):
+        cliente_guardado = None
+    if cliente_guardado not in clientes_por_id:
+        st.session_state.cliente_id = None
+        st.session_state.mobile_cliente_selector = None
+        st.session_state.mobile_cliente_expandido = True
 
 if not productos_por_id:
     st.warning("No se encontraron productos disponibles para venta.")
@@ -1943,6 +2849,8 @@ def restaurar_borrador_local_si_corresponde() -> None:
     if not pedido_token.startswith("RV-") or len(pedido_token) > 40:
         pedido_token = f"RV-{uuid.uuid4().hex}"
     st.session_state.cliente_id = cliente_id
+    st.session_state.mobile_cliente_selector = cliente_id
+    st.session_state.mobile_cliente_expandido = not bool(cliente_id)
     st.session_state.carrito = lineas_restauradas
     st.session_state.nota_pedido = nota
     st.session_state.desktop_nota_pedido = nota
@@ -1996,6 +2904,40 @@ def opciones_clientes() -> list[int]:
             if cliente_id not in recientes
         ),
     ]
+
+
+def render_resumen_cliente(cliente: dict[str, Any]) -> None:
+    domicilio = ", ".join(
+        str(cliente.get(campo) or "").strip()
+        for campo in ("street", "city", "zip")
+        if str(cliente.get(campo) or "").strip()
+    )
+    detalles = [
+        valor
+        for valor in (
+            domicilio,
+            str(cliente.get("email") or "").strip(),
+            (
+                f"RFC {cliente['vat']}"
+                if str(cliente.get("vat") or "").strip()
+                else ""
+            ),
+        )
+        if valor
+    ]
+    texto = " · ".join(detalles) or "Cliente listo para continuar"
+    st.markdown(
+        f"""
+        <div class="rv-client-selected">
+            <span class="rv-client-selected-icon">✓</span>
+            <div>
+                <strong>{seguro(cliente.get('name') or 'Cliente seleccionado')}</strong>
+                <p>{seguro(texto)}</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 
@@ -2202,7 +3144,14 @@ def render_carrito(
                     else ""
                 )
 
-                with st.container(border=True):
+                with st.container(
+                    border=True,
+                    key=(
+                        f"rv_mobile_cart_card_{linea_id}"
+                        if prefijo == "mobile"
+                        else None
+                    ),
+                ):
                     st.markdown(
                         f"""
                         <div class="rv-cart-line">
@@ -2223,13 +3172,23 @@ def render_carrito(
                         menos, numero, mas = st.columns([1, 1.15, 1])
 
                     with menos:
-                        st.button(
-                            "−",
-                            key=f"{prefijo}_minus_{linea_id}",
-                            use_container_width=True,
-                            on_click=cambiar_cantidad,
-                            args=(linea_id, -1),
-                        )
+                        if prefijo == "mobile" and cantidad == 1:
+                            st.button(
+                                "🗑️",
+                                help="Eliminar producto",
+                                key=f"{prefijo}_remove_quick_{linea_id}",
+                                use_container_width=True,
+                                on_click=eliminar_linea,
+                                args=(linea_id,),
+                            )
+                        else:
+                            st.button(
+                                "−",
+                                key=f"{prefijo}_minus_{linea_id}",
+                                use_container_width=True,
+                                on_click=cambiar_cantidad,
+                                args=(linea_id, -1),
+                            )
                     with numero:
                         st.markdown(
                             f'<div class="rv-qty-display">{cantidad}</div>',
@@ -2299,7 +3258,14 @@ def render_carrito(
                 precio_cobrado_final = precio_final_linea(cobrada)
                 subtotal = int(cobrada["cantidad"]) * precio_cobrado_final
 
-                with st.container(border=True):
+                with st.container(
+                    border=True,
+                    key=(
+                        f"rv_mobile_cart_card_{grupo_id}"
+                        if prefijo == "mobile"
+                        else None
+                    ),
+                ):
                     st.markdown(
                         f"""
                         <div class="rv-cart-line">
@@ -2371,7 +3337,9 @@ def render_carrito(
         """,
         unsafe_allow_html=True,
     )
-    st.caption(f"{lineas} líneas · {unidades} unidades · {gratis} gratis")
+    texto_lineas = f"{lineas} {'línea' if lineas == 1 else 'líneas'}"
+    texto_unidades = f"{unidades} {'unidad' if unidades == 1 else 'unidades'}"
+    st.caption(f"{texto_lineas} · {texto_unidades} · {gratis} gratis")
 
     clave_nota = f"{prefijo}_nota_pedido"
     if clave_nota not in st.session_state:
@@ -2404,9 +3372,177 @@ def render_carrito(
         )
 
 
+def render_metricas_compactas(
+    metricas: list[tuple[str, str]],
+    *,
+    clase: str,
+) -> None:
+    tarjetas = "".join(
+        (
+            '<div class="rv-mini-metric">'
+            f'<p class="rv-mini-metric-label">{seguro(etiqueta)}</p>'
+            f'<p class="rv-mini-metric-value">{seguro(valor)}</p>'
+            "</div>"
+        )
+        for etiqueta, valor in metricas
+    )
+    st.markdown(
+        f'<div class="{clase}">{tarjetas}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # =============================================================================
 # DIÁLOGOS
 # =============================================================================
+
+
+@st.dialog("Nuevo cliente", width="large", on_dismiss="rerun")
+def dialogo_nuevo_cliente() -> None:
+    """Alta rápida de un contacto de venta directamente en Odoo."""
+
+    version = int(st.session_state.nuevo_cliente_version)
+    st.markdown(
+        """
+        <div class="rv-new-client-intro">
+            <span class="rv-new-client-icon">＋</span>
+            <div>
+                <strong>Alta rápida en Odoo</strong>
+                <p>Completa los datos esenciales. El cliente quedará seleccionado para continuar el pedido.</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.form(f"nuevo_cliente_form_{version}", clear_on_submit=False):
+        nombre = st.text_input(
+            "Nombre *",
+            placeholder="Ej. Clínica Veterinaria San José",
+            max_chars=160,
+            key=f"nuevo_cliente_nombre_{version}",
+        )
+        correo = st.text_input(
+            "Correo *",
+            placeholder="cliente@dominio.com",
+            max_chars=160,
+            key=f"nuevo_cliente_correo_{version}",
+        )
+        direccion = st.text_area(
+            "Dirección *",
+            placeholder="Calle, número, colonia y municipio",
+            max_chars=240,
+            height=88,
+            key=f"nuevo_cliente_direccion_{version}",
+        )
+        cp_col, rfc_col = st.columns(2, gap="small")
+        with cp_col:
+            codigo_postal = st.text_input(
+                "Código postal *",
+                placeholder="64000",
+                max_chars=5,
+                key=f"nuevo_cliente_cp_{version}",
+            )
+        with rfc_col:
+            rfc = st.text_input(
+                "RFC (opcional)",
+                placeholder="XAXX010101000",
+                max_chars=15,
+                help="Se guardará en el campo RFC/ID fiscal de Odoo.",
+                key=f"nuevo_cliente_rfc_{version}",
+            )
+
+        st.caption("* Campos obligatorios · Se verificará correo y RFC para evitar duplicados.")
+        guardar = st.form_submit_button(
+            "Guardar cliente en Odoo",
+            type="primary",
+            use_container_width=True,
+            disabled=st.session_state.get("alta_cliente_en_progreso", False),
+        )
+
+    if not guardar:
+        return
+
+    st.session_state.alta_cliente_en_progreso = True
+    try:
+        with st.spinner("Validando y guardando cliente..."):
+            resultado_cliente = alta_cliente_odoo(
+                url=URL,
+                db=DB,
+                uid=uid,
+                password=PASSWORD,
+                nombre=nombre,
+                correo=correo,
+                direccion=direccion,
+                codigo_postal=codigo_postal,
+                rfc=rfc,
+                timeout=ODOO_TIMEOUT_SEGUNDOS,
+            )
+
+        cliente_id = int(resultado_cliente["id"])
+        recientes = [
+            int(item)
+            for item in st.session_state.clientes_recientes
+            if int(item) != cliente_id
+        ]
+        st.session_state.clientes_recientes = [cliente_id, *recientes][:8]
+        st.session_state.cliente_seleccion_pendiente = cliente_id
+        st.session_state.nuevo_cliente_version = version + 1
+        st.session_state.nuevo_cliente_pendiente = False
+        cargar_datos_odoo.clear()
+
+        accion = "creado" if resultado_cliente["creado"] else "encontrado"
+        st.session_state.notificacion_pendiente = {
+            "texto": (
+                f"Cliente {accion} y seleccionado: "
+                f"{resultado_cliente['name']}"
+            ),
+            "icono": "👤",
+        }
+        logger.info(
+            "Cliente %s en Odoo (id=%s)",
+            accion,
+            cliente_id,
+        )
+        st.rerun()
+    except ValidacionClienteError as error:
+        st.error("Revisa los datos marcados antes de guardar.")
+        st.markdown(
+            "\n".join(f"- {seguro(mensaje)}" for mensaje in error.errores.values())
+        )
+    except ConflictoClienteError as error:
+        st.error(str(error))
+        st.caption(
+            "Revisa el contacto en Odoo o usa los datos que ya están registrados."
+        )
+    except xmlrpc.client.Fault as error:
+        logger.exception("Odoo rechazó el alta del cliente")
+        st.error(
+            "Odoo rechazó el cliente. Verifica que el correo o RFC no estén "
+            "registrados con información diferente."
+        )
+        with st.expander("Ver detalle técnico"):
+            st.code(error.faultString)
+    except xmlrpc.client.ProtocolError as error:
+        logger.exception("Error HTTP durante el alta del cliente")
+        st.error(
+            "No se recibió una respuesta válida de Odoo. Puedes reintentar: "
+            "la app buscará el mismo correo/RFC antes de crear otro contacto."
+        )
+        st.caption(f"Código HTTP: {error.errcode}")
+    except TimeoutError:
+        logger.exception("Timeout durante el alta del cliente")
+        st.error(
+            "Odoo tardó más de 15 segundos. Puedes reintentar sin riesgo de "
+            "duplicarlo: primero se buscará el correo y RFC ingresados."
+        )
+    except Exception as error:
+        logger.exception("Error inesperado durante el alta del cliente")
+        st.error("No fue posible guardar el cliente en este momento.")
+        with st.expander("Ver detalle técnico"):
+            st.code(str(error))
+    finally:
+        st.session_state.alta_cliente_en_progreso = False
 
 
 @st.dialog("Agregar promoción", on_dismiss="rerun")
@@ -2423,12 +3559,15 @@ def dialogo_promocion(producto_id: int) -> None:
         f"{detalle_lista['texto_impuestos']}"
     )
 
-    preset = st.radio(
+    preset = st.pills(
         "Promoción",
         PROMOCIONES_RAPIDAS,
-        horizontal=True,
+        default="1+1",
+        required=True,
+        width="stretch",
         key=f"promo_preset_{producto_id}",
     )
+    preset = str(preset or "1+1")
 
     if preset == "Otra":
         valor_cobradas, valor_gratis = 1, 1
@@ -2515,10 +3654,14 @@ def dialogo_confirmar_pedido() -> None:
     if detalles_cliente:
         st.caption(" · ".join(detalles_cliente))
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Productos", len(elementos))
-    c2.metric("Unidades", unidades)
-    c3.metric("Total estimado", moneda(total))
+    render_metricas_compactas(
+        [
+            ("Productos", str(len(elementos))),
+            ("Unidades", str(unidades)),
+            ("Total", moneda(total)),
+        ],
+        clase="rv-review-metrics",
+    )
 
     lineas_cero_no_promocion = [
         linea
@@ -2567,24 +3710,43 @@ def dialogo_confirmar_pedido() -> None:
         st.info(f"Nota: {nota}")
 
     st.caption(
-        f"{lineas} líneas · {gratis} unidades gratis · "
+        f"{lineas} {'línea' if lineas == 1 else 'líneas'} · "
+        f"{gratis} {'unidad' if gratis == 1 else 'unidades'} gratis · "
         "Odoo confirmará impuestos y total definitivo."
     )
 
-    volver_col, confirmar_col = st.columns([1, 1.5])
-    with volver_col:
-        if st.button("Seguir editando", use_container_width=True):
-            st.session_state.confirmar_envio = False
-            st.rerun()
-    with confirmar_col:
+    if ES_MOVIL:
         if st.button(
             "Confirmar y crear en Odoo",
             type="primary",
             use_container_width=True,
+            key="mobile_confirmar_pedido_odoo",
         ):
             st.session_state.confirmar_envio = False
             st.session_state.enviar_pedido = True
             st.rerun()
+        if st.button(
+            "Seguir editando",
+            use_container_width=True,
+            key="mobile_seguir_editando",
+        ):
+            st.session_state.confirmar_envio = False
+            st.rerun()
+    else:
+        volver_col, confirmar_col = st.columns([1, 1.5])
+        with volver_col:
+            if st.button("Seguir editando", use_container_width=True):
+                st.session_state.confirmar_envio = False
+                st.rerun()
+        with confirmar_col:
+            if st.button(
+                "Confirmar y crear en Odoo",
+                type="primary",
+                use_container_width=True,
+            ):
+                st.session_state.confirmar_envio = False
+                st.session_state.enviar_pedido = True
+                st.rerun()
 
 
 # =============================================================================
@@ -2604,11 +3766,15 @@ if resultado:
         if resultado.get("referencia"):
             st.caption(f"Referencia de seguridad: {resultado['referencia']}")
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Líneas", resultado["lineas"])
-        c2.metric("Unidades", resultado["unidades"])
-        c3.metric("Impuestos", moneda(resultado.get("impuestos", 0.0)))
-        c4.metric("Total final", moneda(resultado["total"]))
+        render_metricas_compactas(
+            [
+                ("Líneas", str(resultado["lineas"])),
+                ("Unidades", str(resultado["unidades"])),
+                ("Impuestos", moneda(resultado.get("impuestos", 0.0))),
+                ("Total final", moneda(resultado["total"])),
+            ],
+            clase="rv-result-metrics",
+        )
 
         st.markdown("### Compartir pedido")
         st.link_button(
@@ -2675,6 +3841,7 @@ def render_desktop_clasico() -> None:
                 <span class="rv-classic-pill">Precios editables</span>
                 <span class="rv-classic-pill">Promociones en dos líneas</span>
                 <span class="rv-classic-pill">Productos repetidos</span>
+                <span class="rv-classic-pill">Alta de clientes en campo</span>
                 <span class="rv-classic-pill">WhatsApp al finalizar</span>
             </div>
         </div>
@@ -2741,7 +3908,7 @@ def render_desktop_clasico() -> None:
                 unsafe_allow_html=True,
             )
             st.markdown(
-                '<p class="rv-classic-section-copy">Busca por nombre o ciudad.</p>',
+                '<p class="rv-classic-section-copy">Busca por nombre o ciudad. Si no existe, créalo sin salir del pedido.</p>',
                 unsafe_allow_html=True,
             )
 
@@ -2756,26 +3923,27 @@ def render_desktop_clasico() -> None:
 
             if cliente_id:
                 cliente = clientes_por_id[int(cliente_id)]
-                detalles: list[str] = []
-                if cliente.get("city"):
-                    detalles.append(f"📍 {cliente['city']}")
-                if cliente.get("vat"):
-                    detalles.append(f"RFC: {cliente['vat']}")
-                if cliente.get("phone"):
-                    detalles.append(f"📞 {cliente['phone']}")
-                if cliente.get("email"):
-                    detalles.append(f"✉️ {cliente['email']}")
-                if detalles:
-                    st.caption(" · ".join(detalles))
+                render_resumen_cliente(cliente)
 
             st.divider()
-            if st.button(
-                "↻ Actualizar clientes y productos",
-                use_container_width=True,
-                key="desktop_classic_actualizar",
-            ):
-                cargar_datos_odoo.clear()
-                st.rerun()
+            nuevo_col, actualizar_col = st.columns([1.45, 1], gap="small")
+            with nuevo_col:
+                st.button(
+                    "＋ Nuevo cliente",
+                    type="primary",
+                    use_container_width=True,
+                    key="desktop_classic_nuevo_cliente",
+                    on_click=solicitar_nuevo_cliente,
+                )
+            with actualizar_col:
+                if st.button(
+                    "↻ Actualizar",
+                    help="Actualizar clientes y productos desde Odoo",
+                    use_container_width=True,
+                    key="desktop_classic_actualizar",
+                ):
+                    cargar_datos_odoo.clear()
+                    st.rerun()
 
     with producto_col:
         with st.container(border=True):
@@ -3003,47 +4171,127 @@ def render_encabezado() -> None:
     )
 
 
+def render_progreso_movil() -> None:
+    """Muestra la arquitectura del pedido como un flujo corto de tres pasos."""
+
+    cliente_listo = st.session_state.get("cliente_id") is not None
+    tab_actual = str(st.session_state.get("mobile_tab") or "Productos")
+    clase_cliente = "is-done" if cliente_listo else "is-active"
+    clase_productos = "is-active" if cliente_listo and tab_actual == "Productos" else ""
+    clase_carrito = "is-active" if cliente_listo and tab_actual == "Carrito" else ""
+    numero_cliente = "✓" if cliente_listo else "1"
+
+    st.markdown(
+        f"""
+        <div class="rv-mobile-progress" aria-label="Progreso del pedido">
+            <div class="rv-mobile-progress-step {clase_cliente}">
+                <span>{numero_cliente}</span>Cliente
+            </div>
+            <div class="rv-mobile-progress-step {clase_productos}">
+                <span>2</span>Productos
+            </div>
+            <div class="rv-mobile-progress-step {clase_carrito}">
+                <span>3</span>Carrito
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_cliente() -> None:
     if ES_MOVIL:
+        cliente_actual = st.session_state.get("cliente_id")
+        cliente = (
+            clientes_por_id.get(int(cliente_actual))
+            if cliente_actual is not None
+            else None
+        )
+        expandido = bool(st.session_state.get("mobile_cliente_expandido", True))
+
         with st.container(border=True, key="rv_mobile_client_card"):
+            if cliente and not expandido:
+                detalle_cliente = " · ".join(
+                    valor
+                    for valor in (
+                        str(cliente.get("city") or "").strip(),
+                        str(cliente.get("email") or "").strip(),
+                    )
+                    if valor
+                ) or "Listo para continuar el pedido"
+                st.markdown(
+                    f"""
+                    <div class="rv-mobile-client-compact">
+                        <span class="rv-mobile-client-check">✓</span>
+                        <div>
+                            <strong>{seguro(cliente.get('name') or 'Cliente seleccionado')}</strong>
+                            <p>{seguro(detalle_cliente)}</p>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                cambiar_col, nuevo_col = st.columns(2, gap="small")
+                with cambiar_col:
+                    st.button(
+                        "Cambiar",
+                        use_container_width=True,
+                        key="mobile_cambiar_cliente",
+                        on_click=editar_cliente_movil,
+                    )
+                with nuevo_col:
+                    st.button(
+                        "＋ Nuevo",
+                        type="primary",
+                        use_container_width=True,
+                        key="nuevo_cliente_mobile_compacto",
+                        on_click=solicitar_nuevo_cliente,
+                    )
+                return
+
             st.markdown(
-                '<p class="rv-mobile-client-label">Cliente del pedido</p>',
+                '<p class="rv-mobile-client-label">1 · Selecciona el cliente del pedido</p>',
                 unsafe_allow_html=True,
             )
-            selector_col, acciones_col = st.columns([6, 1], gap="small")
-            with selector_col:
-                st.selectbox(
-                    "Cliente del pedido",
-                    options=opciones_clientes(),
-                    index=None,
-                    placeholder="Buscar cliente por nombre o ciudad…",
-                    format_func=etiqueta_cliente,
-                    key="cliente_id",
-                    label_visibility="collapsed",
+            selector_guardado = st.session_state.get("mobile_cliente_selector")
+            if selector_guardado not in clientes_por_id:
+                st.session_state.mobile_cliente_selector = (
+                    int(cliente_actual) if cliente else None
                 )
-            with acciones_col:
+
+            st.selectbox(
+                "Cliente del pedido",
+                options=opciones_clientes(),
+                index=None,
+                placeholder="Buscar por nombre, ciudad, correo o RFC…",
+                format_func=etiqueta_cliente,
+                key="mobile_cliente_selector",
+                label_visibility="collapsed",
+                on_change=seleccionar_cliente_movil,
+            )
+
+            nuevo_col, actualizar_col = st.columns(2, gap="small")
+            with nuevo_col:
+                st.button(
+                    "＋ Nuevo cliente",
+                    type="primary",
+                    use_container_width=True,
+                    key="nuevo_cliente_mobile",
+                    on_click=solicitar_nuevo_cliente,
+                )
+            with actualizar_col:
                 if st.button(
-                    "↻",
+                    "↻ Actualizar",
                     help="Actualizar clientes y productos",
                     use_container_width=True,
                     key="actualizar_odoo_mobile",
                 ):
                     cargar_datos_odoo.clear()
                     st.rerun()
-            cliente_actual = st.session_state.get("cliente_id")
-            if cliente_actual:
-                cliente = clientes_por_id[int(cliente_actual)]
-                datos = [
-                    str(cliente.get(campo) or "").strip()
-                    for campo in ("city", "phone")
-                    if str(cliente.get(campo) or "").strip()
-                ]
-                if datos:
-                    st.caption("Cliente seleccionado · " + " · ".join(datos))
         return
 
     with st.container(border=True):
-        cliente_col, actualizar_col = st.columns([5, 1])
+        cliente_col, nuevo_col, actualizar_col = st.columns([5, 1.6, 1])
         with cliente_col:
             st.selectbox(
                 "Cliente del pedido",
@@ -3052,6 +4300,15 @@ def render_cliente() -> None:
                 placeholder="Buscar cliente por nombre o ciudad…",
                 format_func=etiqueta_cliente,
                 key="cliente_id",
+            )
+        with nuevo_col:
+            st.markdown("<div style='height:.08rem'></div>", unsafe_allow_html=True)
+            st.button(
+                "＋ Nuevo cliente",
+                type="primary",
+                use_container_width=True,
+                key="nuevo_cliente_desktop",
+                on_click=solicitar_nuevo_cliente,
             )
         with actualizar_col:
             st.markdown("<div style='height:.08rem'></div>", unsafe_allow_html=True)
@@ -3065,14 +4322,27 @@ def render_cliente() -> None:
                 st.rerun()
 
 
-def render_catalogo(*, movil: bool) -> None:
+def render_encabezado_catalogo_movil() -> None:
+    st.markdown(
+        """
+        <div class="rv-mobile-section-heading" id="rv-mobile-catalog-heading">
+            <span class="rv-mobile-step-number">02</span>
+            <div>
+                <p class="rv-mobile-section-eyebrow">Catálogo de campo</p>
+                <p class="rv-mobile-page-title">Arma el pedido</p>
+                <p class="rv-mobile-page-copy">Encuentra el producto y agrega una unidad sin perder tu lugar.</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_catalogo(*, movil: bool, mostrar_encabezado: bool = True) -> None:
     if movil:
-        st.markdown('<p class="rv-mobile-page-title">Productos</p>', unsafe_allow_html=True)
-        st.markdown(
-            '<p class="rv-mobile-page-copy">Busca y toca <b>Agregar</b>. Usa 🎁 solo cuando el producto lleve promoción.</p>',
-            unsafe_allow_html=True,
-        )
-        catalog_context = st.container()
+        if mostrar_encabezado:
+            render_encabezado_catalogo_movil()
+        catalog_context = st.container(key="rv_mobile_catalog_surface")
     else:
         catalog_context = st.container(border=True)
 
@@ -3090,43 +4360,71 @@ def render_catalogo(*, movil: bool) -> None:
             else st.container()
         )
         with search_context:
-            busqueda_actual = st_keyup(
-                "Buscar producto",
-                value=str(st.session_state.busqueda_pos or ""),
-                placeholder="Buscar por nombre o código…",
-                key=(
-                    "busqueda_pos_input_"
-                    f"{st.session_state.busqueda_widget_version}"
-                ),
-                debounce=320,
-            )
-
-            busqueda_actual = str(busqueda_actual or "")
-            if busqueda_actual != str(st.session_state.busqueda_pos or ""):
-                st.session_state.busqueda_pos = busqueda_actual
-                resetear_catalogo()
+            if movil:
+                st.markdown(
+                    '<p class="rv-mobile-filter-label">Buscar en el catálogo</p>',
+                    unsafe_allow_html=True,
+                )
+                with st.container(key="rv_mobile_search_controls"):
+                    buscar_col, limpiar_col = st.columns([6, 1], gap="small")
+                    with buscar_col:
+                        busqueda_actual = st_keyup(
+                            "Buscar producto",
+                            placeholder="Nombre o código…",
+                            key=(
+                                "busqueda_pos_input_"
+                                f"{st.session_state.busqueda_widget_version}"
+                            ),
+                            debounce=320,
+                            label_visibility="collapsed",
+                        )
+                        busqueda_actual = str(busqueda_actual or "")
+                        if busqueda_actual != str(st.session_state.busqueda_pos or ""):
+                            st.session_state.busqueda_pos = busqueda_actual
+                            resetear_catalogo()
+                    with limpiar_col:
+                        st.button(
+                            "✕",
+                            help="Limpiar búsqueda",
+                            use_container_width=True,
+                            disabled=not bool(busqueda_actual.strip()),
+                            key="mobile_limpiar_busqueda",
+                            on_click=limpiar_busqueda_catalogo,
+                        )
+                habilitar_motion_busqueda_movil()
+            else:
+                st.text_input(
+                    "Buscar producto",
+                    placeholder="Buscar por nombre o código…",
+                    key="busqueda_pos",
+                    on_change=resetear_catalogo,
+                )
 
             categorias = sorted(
                 {categoria_producto(p) for p in productos_por_id.values()}
             )
 
             if movil:
-                st.segmented_control(
-                    "Vista",
-                    options=["Todos", "Recientes"],
-                    key="vista_pos",
-                    on_change=resetear_catalogo,
-                    label_visibility="collapsed",
-                    width="stretch",
-                    required=True,
-                )
-                st.selectbox(
-                    "Categoría",
-                    options=["Todas", *categorias],
-                    key="categoria_pos",
-                    on_change=resetear_catalogo,
-                    label_visibility="collapsed",
-                )
+                with st.container(key="rv_mobile_filter_controls"):
+                    vista_col, categoria_col = st.columns(2, gap="small")
+                    with vista_col:
+                        st.segmented_control(
+                            "Vista",
+                            options=["Todos", "Recientes"],
+                            key="vista_pos",
+                            on_change=resetear_catalogo,
+                            label_visibility="collapsed",
+                            width="stretch",
+                            required=True,
+                        )
+                    with categoria_col:
+                        st.selectbox(
+                            "Categoría",
+                            options=["Todas", *categorias],
+                            key="categoria_pos",
+                            on_change=resetear_catalogo,
+                            label_visibility="collapsed",
+                        )
             else:
                 filtro_col, vista_col = st.columns([1.2, 1])
                 with filtro_col:
@@ -3149,28 +4447,38 @@ def render_catalogo(*, movil: bool) -> None:
         productos_por_pagina = 6 if movil else PRODUCTOS_POR_PAGINA
         columnas_catalogo = 1 if movil else COLUMNAS_CATALOGO
         total_productos = len(ids_filtrados)
-        total_paginas = max(
-            1,
-            (total_productos + productos_por_pagina - 1) // productos_por_pagina,
+        paginacion = calcular_paginacion(
+            total_productos,
+            int(st.session_state.pagina_catalogo),
+            productos_por_pagina,
         )
-        pagina_actual = min(
-            max(0, int(st.session_state.pagina_catalogo)),
-            total_paginas - 1,
-        )
+        total_paginas = paginacion["total_paginas"]
+        pagina_actual = paginacion["pagina"]
         st.session_state.pagina_catalogo = pagina_actual
 
-        inicio = pagina_actual * productos_por_pagina
-        fin = min(inicio + productos_por_pagina, total_productos)
+        inicio = paginacion["inicio"]
+        fin = paginacion["fin"]
         ids_visibles = ids_filtrados[inicio:fin]
         texto_resultados = (
             f"{inicio + 1}–{fin} de {total_productos}"
             if total_productos
             else "0 productos"
         )
-        st.markdown(
-            f'<p class="rv-results">{texto_resultados}</p>',
-            unsafe_allow_html=True,
-        )
+        if movil:
+            st.markdown(
+                f"""
+                <div class="rv-motion-result-meta" aria-live="polite">
+                    <span>{texto_resultados}</span>
+                    <span class="rv-motion-result-state">Resultados listos</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<p class="rv-results">{texto_resultados}</p>',
+                unsafe_allow_html=True,
+            )
 
         if st.session_state.vista_pos == "Recientes" and not ids_visibles:
             st.markdown(
@@ -3183,6 +4491,9 @@ def render_catalogo(*, movil: bool) -> None:
                 unsafe_allow_html=True,
             )
         elif movil:
+            producto_confirmado_id = st.session_state.get(
+                "mobile_producto_confirmado_id"
+            )
             for producto_id in ids_visibles:
                 producto = productos_por_id[producto_id]
                 codigo = str(producto.get("default_code") or "S/C")
@@ -3191,6 +4502,24 @@ def render_catalogo(*, movil: bool) -> None:
                 detalle_precio = detalle_precio_producto(producto, precio_base)
                 precio = float(detalle_precio["precio_final"])
                 clase_impuesto = "" if detalle_precio["tiene_impuestos"] else "rv-tax-note-none"
+                cantidad_en_carrito = cantidad_producto_en_carrito(
+                    st.session_state.carrito,
+                    producto_id,
+                )
+                indicador_carrito = (
+                    f'<span class="rv-in-cart-chip">En carrito · {cantidad_en_carrito}</span>'
+                    if cantidad_en_carrito
+                    else (
+                        '<span class="rv-in-cart-chip rv-in-cart-chip-placeholder" '
+                        'aria-hidden="true">En carrito · 0</span>'
+                    )
+                )
+                clase_confirmacion = (
+                    "is-confirmed"
+                    if producto_confirmado_id is not None
+                    and int(producto_confirmado_id) == int(producto_id)
+                    else ""
+                )
 
                 with st.container(
                     border=True,
@@ -3198,34 +4527,38 @@ def render_catalogo(*, movil: bool) -> None:
                 ):
                     st.markdown(
                         f"""
-                        <div class="rv-mobile-product-row">
-                            <p class="rv-product-code">{seguro(codigo)}</p>
-                            <p class="rv-product-name">{seguro(nombre)}</p>
-                            <p class="rv-product-price">{moneda(precio)}</p>
-                            <p class="rv-tax-note {clase_impuesto}">{seguro(detalle_precio['texto_impuestos'])}</p>
+                        <div class="rv-mobile-product-feedback {clase_confirmacion}">
+                            <div class="rv-mobile-product-row">
+                                <p class="rv-product-code">{seguro(codigo)}</p>
+                                <p class="rv-product-name">{seguro(nombre)}</p>
+                                <p class="rv-product-price">{moneda(precio)}</p>
+                                <p class="rv-tax-note {clase_impuesto}">{seguro(detalle_precio['texto_impuestos'])}</p>
+                            </div>
+                            <div class="rv-mobile-cart-status">{indicador_carrito}</div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
-                    agregar_col, promo_col = st.columns([4, 1], gap="small")
+                    agregar_col, promo_col = st.columns([3, 1.25], gap="small")
                     with agregar_col:
-                        st.button(
+                        if st.button(
                             "＋ Agregar",
                             key=f"mobile_quick_add_{producto_id}",
                             type="primary",
                             use_container_width=True,
-                            on_click=agregar_venta_rapida,
-                            args=(producto_id,),
-                        )
+                        ):
+                            agregar_venta_rapida(producto_id)
+                            st.rerun(scope="app")
                     with promo_col:
-                        st.button(
-                            "🎁",
+                        if st.button(
+                            "🎁 Promo",
                             key=f"mobile_promo_{producto_id}",
                             help="Agregar promoción",
                             use_container_width=True,
-                            on_click=abrir_promocion,
-                            args=(producto_id,),
-                        )
+                        ):
+                            abrir_promocion(producto_id)
+                            st.rerun(scope="app")
+            st.session_state.mobile_producto_confirmado_id = None
         else:
             for indice in range(0, len(ids_visibles), columnas_catalogo):
                 columnas = st.columns(columnas_catalogo, gap="small")
@@ -3277,59 +4610,109 @@ def render_catalogo(*, movil: bool) -> None:
                                 )
 
         if total_paginas > 1:
-            anterior_col, estado_col, siguiente_col = st.columns([1, 1.2, 1])
-            with anterior_col:
-                if st.button(
-                    "← Anterior" if movil else "←",
-                    help="Página anterior",
-                    use_container_width=True,
-                    disabled=pagina_actual == 0,
-                    key=f"{'mobile' if movil else 'desktop'}_catalogo_anterior",
-                ):
-                    st.session_state.pagina_catalogo = pagina_actual - 1
-                    st.rerun()
-            with estado_col:
-                st.markdown(
-                    f'<div class="rv-page-status">{pagina_actual + 1} de {total_paginas}</div>',
-                    unsafe_allow_html=True,
-                )
-            with siguiente_col:
-                if st.button(
-                    "Siguiente →" if movil else "→",
-                    help="Página siguiente",
-                    use_container_width=True,
-                    disabled=pagina_actual >= total_paginas - 1,
-                    key=f"{'mobile' if movil else 'desktop'}_catalogo_siguiente",
-                ):
-                    st.session_state.pagina_catalogo = pagina_actual + 1
-                    st.rerun()
+            pagination_context = (
+                st.container(key="rv_mobile_pagination")
+                if movil
+                else st.container()
+            )
+            with pagination_context:
+                anterior_col, estado_col, siguiente_col = st.columns([1, 1.2, 1])
+                with anterior_col:
+                    if movil:
+                        st.button(
+                            "← Anterior",
+                            help="Página anterior",
+                            use_container_width=True,
+                            disabled=pagina_actual == 0,
+                            key="mobile_catalogo_anterior",
+                            on_click=cambiar_pagina_catalogo,
+                            args=(-1,),
+                        )
+                    elif st.button(
+                        "←",
+                        help="Página anterior",
+                        use_container_width=True,
+                        disabled=pagina_actual == 0,
+                        key="desktop_catalogo_anterior",
+                    ):
+                        st.session_state.pagina_catalogo = pagina_actual - 1
+                        st.rerun()
+                with estado_col:
+                    st.markdown(
+                        f'<div class="rv-page-status">{pagina_actual + 1} de {total_paginas}</div>',
+                        unsafe_allow_html=True,
+                    )
+                with siguiente_col:
+                    if movil:
+                        st.button(
+                            "Siguiente →",
+                            help="Página siguiente",
+                            use_container_width=True,
+                            disabled=pagina_actual >= total_paginas - 1,
+                            key="mobile_catalogo_siguiente",
+                            on_click=cambiar_pagina_catalogo,
+                            args=(1,),
+                        )
+                    elif st.button(
+                        "→",
+                        help="Página siguiente",
+                        use_container_width=True,
+                        disabled=pagina_actual >= total_paginas - 1,
+                        key="desktop_catalogo_siguiente",
+                    ):
+                        st.session_state.pagina_catalogo = pagina_actual + 1
+                        st.rerun()
+
+
+@st.fragment
+def render_catalogo_movil_fragmento() -> None:
+    """Actualiza búsqueda y resultados sin reconstruir el resto de la app."""
+
+    render_catalogo(movil=True, mostrar_encabezado=False)
 
 
 def render_carrito_panel(*, movil: bool) -> None:
     if movil:
         elementos = elementos_carrito()
-        st.markdown('<p class="rv-mobile-page-title">Carrito</p>', unsafe_allow_html=True)
         st.markdown(
-            '<p class="rv-mobile-page-copy">Ajusta cantidades con − y +. El precio solo se abre cuando necesitas modificarlo.</p>',
+            """
+            <div class="rv-mobile-section-heading">
+                <span class="rv-mobile-step-number">03</span>
+                <div>
+                    <p class="rv-mobile-section-eyebrow">Revisión final</p>
+                    <p class="rv-mobile-page-title">Revisa el carrito</p>
+                    <p class="rv-mobile-page-copy">Ajusta cantidades y confirma antes de enviar a Odoo.</p>
+                </div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
         if elementos:
-            resumen_col, opciones_col = st.columns([5, 1], gap="small")
-            with resumen_col:
-                _, unidades, gratis, total = totales_carrito()
-                st.markdown(
-                    f"**{len(elementos)} productos · {unidades} unidades**  \n{gratis} gratis · {moneda(total)}",
-                )
-            with opciones_col:
-                with st.popover("⋯", use_container_width=True):
-                    if st.button(
-                        "Vaciar carrito",
-                        key="mobile_vaciar_menu",
-                        use_container_width=True,
-                    ):
-                        vaciar_carrito()
-                        st.rerun()
+            with st.container(key="rv_mobile_cart_header"):
+                resumen_col, opciones_col = st.columns([5, 1], gap="small")
+                with resumen_col:
+                    _, unidades, gratis, total = totales_carrito()
+                    texto_productos = (
+                        "1 producto"
+                        if len(elementos) == 1
+                        else f"{len(elementos)} productos"
+                    )
+                    texto_unidades = (
+                        "1 unidad" if unidades == 1 else f"{unidades} unidades"
+                    )
+                    st.markdown(
+                        f"**{texto_productos} · {texto_unidades}**  \n{gratis} gratis · {moneda(total)}",
+                    )
+                with opciones_col:
+                    with st.popover("⋯", use_container_width=True):
+                        if st.button(
+                            "Vaciar carrito",
+                            key="mobile_vaciar_menu",
+                            use_container_width=True,
+                        ):
+                            vaciar_carrito()
+                            st.rerun()
 
         render_carrito(
             "mobile",
@@ -3352,6 +4735,7 @@ def render_navegacion_movil() -> None:
     _, unidades, _, total = totales_carrito()
     activo = str(st.session_state.mobile_tab)
     listo = bool(st.session_state.cliente_id and st.session_state.carrito)
+    texto_unidades = f"{unidades} {'unidad' if unidades == 1 else 'unidades'}"
 
     with st.bottom:
         with st.container(key="rv_mobile_bottom_bar"):
@@ -3362,7 +4746,7 @@ def render_navegacion_movil() -> None:
                         f"""
                         <div class="rv-mobile-bottom-summary">
                             <div>
-                                <p class="rv-mobile-bottom-copy">{unidades} unidades</p>
+                                <p class="rv-mobile-bottom-copy">{texto_unidades}</p>
                                 <p class="rv-mobile-bottom-total">{moneda(total)}</p>
                             </div>
                         </div>
@@ -3371,7 +4755,12 @@ def render_navegacion_movil() -> None:
                     )
                 with enviar_col:
                     st.button(
-                        "Crear pedido",
+                        "Crear pedido" if st.session_state.cliente_id else "Elige un cliente",
+                        help=(
+                            "Revisar y crear el pedido en Odoo"
+                            if st.session_state.cliente_id
+                            else "Selecciona un cliente en la parte superior"
+                        ),
                         type="primary",
                         use_container_width=True,
                         disabled=(
@@ -3384,8 +4773,8 @@ def render_navegacion_movil() -> None:
             else:
                 st.markdown(
                     f"""
-                    <div class="rv-mobile-bottom-summary">
-                        <p class="rv-mobile-bottom-copy">{unidades} unidades en el carrito</p>
+                        <div class="rv-mobile-bottom-summary">
+                        <p class="rv-mobile-bottom-copy">{texto_unidades} en el carrito</p>
                         <p class="rv-mobile-bottom-total">{moneda(total)}</p>
                     </div>
                     """,
@@ -3417,17 +4806,33 @@ if ES_MOVIL:
     # En teléfono se conserva íntegramente la experiencia mobile-first: una
     # pantalla para Productos, otra para Carrito y navegación inferior fija.
     render_encabezado()
+    render_progreso_movil()
+    habilitar_estabilidad_viewport_movil()
     render_cliente()
-    if st.session_state.mobile_tab == "Carrito":
-        render_carrito_panel(movil=True)
-    else:
-        render_catalogo(movil=True)
+    panel_transition = str(
+        st.session_state.get("mobile_panel_transition") or "steady"
+    )
+    with st.container(key=f"rv_mobile_panel_motion_{panel_transition}"):
+        if st.session_state.mobile_tab == "Carrito":
+            render_carrito_panel(movil=True)
+        else:
+            render_encabezado_catalogo_movil()
+            render_catalogo_movil_fragmento()
+    st.session_state.mobile_panel_transition = ""
     render_navegacion_movil()
 else:
     # En escritorio se usa una interfaz totalmente distinta, basada en el
     # diseño clásico proporcionado por el usuario. No se renderiza el catálogo
     # interfaz móvil ni la barra inferior.
     render_desktop_clasico()
+
+
+# Abre el alta de cliente una sola vez. Consumir la solicitud antes de mostrar
+# el diálogo evita que vuelva a aparecer tras cerrarlo.
+nuevo_cliente_pendiente = st.session_state.get("nuevo_cliente_pendiente", False)
+if nuevo_cliente_pendiente:
+    st.session_state.nuevo_cliente_pendiente = False
+    dialogo_nuevo_cliente()
 
 
 # Abre el diálogo de promoción una sola vez después de tocar el regalo.
