@@ -3282,17 +3282,24 @@ def limpiar_busqueda_catalogo() -> None:
 
 
 def solicitar_envio() -> None:
+    """Marca la confirmación sin forzar un rerun desde un callback.
+
+    Streamlit vuelve a ejecutar automáticamente después de un callback. Llamar
+    ``st.rerun`` dentro de él es un no-op y, en la interfaz móvil fragmentada,
+    impide que el flujo llegue al diálogo y al envío a Odoo.
+    """
+
     if st.session_state.get("envio_en_progreso", False):
         return
     st.session_state.confirmar_envio = True
-    st.rerun(scope="app")
 
 
 def solicitar_nuevo_cliente() -> None:
+    """Marca el alta pendiente; el llamador móvil solicita el rerun completo."""
+
     if st.session_state.get("alta_cliente_en_progreso", False):
         return
     st.session_state.nuevo_cliente_pendiente = True
-    st.rerun(scope="app")
 
 
 def seleccionar_cliente_movil() -> None:
@@ -5125,13 +5132,14 @@ def render_cliente() -> None:
                         on_click=editar_cliente_movil,
                     )
                 with nuevo_col:
-                    st.button(
+                    if st.button(
                         "＋ Nuevo",
                         type="primary",
                         use_container_width=True,
                         key="nuevo_cliente_mobile_compacto",
-                        on_click=solicitar_nuevo_cliente,
-                    )
+                    ):
+                        solicitar_nuevo_cliente()
+                        st.rerun(scope="app")
                 return
 
             st.markdown(
@@ -5162,13 +5170,14 @@ def render_cliente() -> None:
 
             nuevo_col, actualizar_col = st.columns(2, gap="small")
             with nuevo_col:
-                st.button(
+                if st.button(
                     "＋ Nuevo cliente",
                     type="primary",
                     use_container_width=True,
                     key="nuevo_cliente_mobile",
-                    on_click=solicitar_nuevo_cliente,
-                )
+                ):
+                    solicitar_nuevo_cliente()
+                    st.rerun(scope="app")
             with actualizar_col:
                 if st.button(
                     "↻ Actualizar",
@@ -5646,7 +5655,7 @@ def render_navegacion_movil() -> None:
                     unsafe_allow_html=True,
                 )
             with enviar_col:
-                st.button(
+                if st.button(
                     "Crear pedido" if st.session_state.cliente_id else "Elige un cliente",
                     help=(
                         "Revisar y crear el pedido en Odoo"
@@ -5660,8 +5669,12 @@ def render_navegacion_movil() -> None:
                         or st.session_state.get("envio_en_progreso", False)
                     ),
                     key="mobile_bottom_checkout",
-                    on_click=solicitar_envio,
-                )
+                ):
+                    # Este código se ejecuta en el cuerpo del fragmento, no en
+                    # un callback. Así el rerun completo sí abre la confirmación
+                    # y continúa hasta crear el pedido y preparar WhatsApp.
+                    solicitar_envio()
+                    st.rerun(scope="app")
         else:
             st.markdown(
                 f"""
