@@ -2098,6 +2098,22 @@ st.markdown(
                 padding-bottom: .55rem !important;
             }
 
+            /* La tarjeta compacta contiene dos líneas (nombre y detalle),
+               pero el Markdown de Streamlit descuenta 1rem de su altura. Sin
+               este aislamiento los botones comienzan antes de que termine el
+               correo y el bloque se ve comprimido. */
+            .st-key-rv_mobile_client_card
+                [data-testid="stMarkdownContainer"]:has(.rv-mobile-client-compact) {
+                margin-bottom: 0 !important;
+            }
+
+            .st-key-rv_mobile_client_card
+                > [data-testid="stElementContainer"]:has(.rv-mobile-client-compact),
+            .st-key-rv_mobile_client_card
+                [data-testid="stMarkdown"]:has(.rv-mobile-client-compact) {
+                min-height: 2.25rem !important;
+            }
+
             .rv-mobile-client-head {
                 display: flex;
                 align-items: center;
@@ -2133,7 +2149,11 @@ st.markdown(
                 font-size: .72rem;
             }
 
-            .rv-mobile-client-compact { padding-bottom: .18rem; }
+            .rv-mobile-client-compact {
+                min-height: 2.25rem;
+                align-items: center;
+                padding-bottom: .28rem;
+            }
             .rv-mobile-client-compact strong {
                 font-size: .78rem !important;
                 line-height: 1.2 !important;
