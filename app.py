@@ -155,44 +155,29 @@ st.markdown(
     """
     <style>
         :root {
-            --rv-bg: #f3f6f8;
-            --rv-surface: #ffffff;
-            --rv-surface-soft: #f7fafb;
-            --rv-text: #17212b;
-            --rv-muted: #667482;
-            --rv-border: #dce4e9;
-            --rv-primary: #0f766e;
-            --rv-primary-hover: #0a625c;
-            --rv-primary-soft: #e4f5f2;
-            --rv-promo-soft: #fff2d1;
-            --rv-promo-text: #7a5200;
-            --rv-danger: #b42318;
-            --rv-shadow: 0 12px 34px rgba(25, 42, 58, .08);
+            --rv-bg: #09070c;
+            --rv-surface: #151019;
+            --rv-surface-soft: #201724;
+            --rv-surface-elevated: #2a1d30;
+            --rv-text: #f8f4fa;
+            --rv-muted: #b9aec0;
+            --rv-border: rgba(183, 120, 199, .24);
+            --rv-primary: #773b86;
+            --rv-primary-hover: #9654a6;
+            --rv-primary-bright: #c58bd2;
+            --rv-primary-soft: rgba(119, 59, 134, .24);
+            --rv-promo-soft: rgba(237, 174, 82, .15);
+            --rv-promo-text: #f2c879;
+            --rv-danger: #ff8b9b;
+            --rv-shadow: 0 18px 54px rgba(0, 0, 0, .38);
+            --rv-glow: 0 0 0 1px rgba(197, 139, 210, .08),
+                0 16px 46px rgba(52, 19, 62, .3);
             --rv-motion-snap: cubic-bezier(.2, .9, .2, 1);
             --rv-motion-ui: cubic-bezier(.2, .8, .2, 1);
             --rv-motion-gentle: cubic-bezier(.22, .7, .22, 1);
             --rv-motion-stagger: 40ms;
-            --rv-motion-travel: 18px;
-            color-scheme: light;
-        }
-
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --rv-bg: #071018;
-                --rv-surface: #0d1822;
-                --rv-surface-soft: #14212c;
-                --rv-text: #f3f7fa;
-                --rv-muted: #9caab7;
-                --rv-border: #293a49;
-                --rv-primary: #45d5c3;
-                --rv-primary-hover: #69dfd1;
-                --rv-primary-soft: rgba(69, 213, 195, .14);
-                --rv-promo-soft: rgba(255, 190, 68, .14);
-                --rv-promo-text: #ffd27a;
-                --rv-danger: #ff918a;
-                --rv-shadow: 0 16px 42px rgba(0, 0, 0, .32);
-                color-scheme: dark;
-            }
+            --rv-motion-travel: 12px;
+            color-scheme: dark;
         }
 
         html {
@@ -221,9 +206,9 @@ st.markdown(
         }
 
         @keyframes rv-card-confirmed {
-            0% { box-shadow: 0 0 0 0 rgba(15, 118, 110, .34); }
-            45% { box-shadow: 0 0 0 5px rgba(15, 118, 110, .12); }
-            100% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0); }
+            0% { box-shadow: 0 0 0 0 rgba(119, 59, 134, .42); }
+            45% { box-shadow: 0 0 0 6px rgba(119, 59, 134, .16); }
+            100% { box-shadow: 0 0 0 0 rgba(119, 59, 134, 0); }
         }
 
         @keyframes rv-add-confirmed {
@@ -278,12 +263,18 @@ st.markdown(
         }
 
         [data-testid="stAppViewContainer"] {
-            background: var(--rv-bg);
+            background:
+                radial-gradient(circle at 8% -8%, rgba(119, 59, 134, .26), transparent 31rem),
+                radial-gradient(circle at 94% 22%, rgba(119, 59, 134, .13), transparent 27rem),
+                linear-gradient(180deg, #0d0911 0%, var(--rv-bg) 34%, #08060a 100%);
             color: var(--rv-text);
         }
 
         [data-testid="stMain"] {
             overflow-anchor: none;
+            overscroll-behavior-y: contain;
+            -webkit-overflow-scrolling: touch;
+            touch-action: pan-y;
         }
 
         [data-testid="stHeader"] {
@@ -1583,6 +1574,863 @@ st.markdown(
             }
         }
 
+        /* ================================================================
+           RAPYVET 2026 — SISTEMA VISUAL DE MARCA
+           Violeta extraído del logotipo (#773B86), carbón y ciruela.
+           Las transiciones siguen los tokens snap/ui/gentle de Motion UI.
+           ================================================================ */
+        [data-testid="stAppViewContainer"] {
+            font-family: Inter, "Avenir Next", Aptos, "Segoe UI", sans-serif;
+        }
+
+        [data-testid="stAppViewBlockContainer"],
+        [data-testid="stMainBlockContainer"] {
+            position: relative;
+        }
+
+        .rv-topbar,
+        .rv-mobile-appbar {
+            position: relative;
+            overflow: hidden;
+            border-color: rgba(197, 139, 210, .25);
+            background:
+                radial-gradient(circle at 14% -70%, rgba(197, 139, 210, .23), transparent 48%),
+                linear-gradient(128deg, #1b1121 0%, #26152e 54%, #171019 100%);
+            box-shadow: var(--rv-glow);
+        }
+
+        .rv-topbar::after,
+        .rv-mobile-appbar::after {
+            position: absolute;
+            inset: 0 auto 0 -40%;
+            width: 28%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,.11), transparent);
+            content: "";
+            pointer-events: none;
+            animation: rv-catalog-scan .72s var(--rv-motion-gentle) .08s both;
+        }
+
+        .rv-brand-monogram {
+            display: grid;
+            flex: 0 0 2.55rem;
+            width: 2.55rem;
+            height: 2.55rem;
+            place-items: center;
+            border: 1px solid rgba(231, 194, 239, .22);
+            border-radius: .88rem;
+            background: linear-gradient(145deg, #9a56aa 0%, #773b86 58%, #55245f 100%);
+            box-shadow: inset 0 1px rgba(255,255,255,.16), 0 8px 22px rgba(53, 17, 61, .4);
+            color: #fff;
+            font-size: .72rem;
+            font-weight: 1000;
+            letter-spacing: -.08em;
+        }
+
+        .rv-brand-title {
+            color: var(--rv-text) !important;
+            font-size: 1.08rem;
+            line-height: 1;
+            letter-spacing: -.055em;
+        }
+
+        .rv-brand-title span { font-weight: 950; }
+        .rv-brand-title strong {
+            color: var(--rv-primary-bright) !important;
+            font-weight: 1000;
+        }
+
+        .rv-brand-copy {
+            margin-top: .18rem;
+            color: #cbbfd0 !important;
+            font-size: .55rem;
+            font-weight: 800;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+
+        .rv-pill {
+            border-color: rgba(197, 139, 210, .22);
+            background: rgba(12, 8, 15, .48);
+            color: #eee6f0 !important;
+            box-shadow: inset 0 1px rgba(255,255,255,.04);
+        }
+
+        .rv-cart-pill {
+            border-color: rgba(197, 139, 210, .38);
+            color: var(--rv-primary-bright) !important;
+        }
+
+        .rv-online-dot {
+            background: #68d69f;
+            box-shadow: 0 0 0 3px rgba(104, 214, 159, .12);
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border-color: var(--rv-border);
+            background:
+                linear-gradient(145deg, rgba(34, 23, 39, .96), rgba(20, 15, 24, .98));
+            box-shadow: var(--rv-glow);
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+            border-color: rgba(197, 139, 210, .48);
+            box-shadow: 0 0 0 1px rgba(197, 139, 210, .08),
+                0 18px 50px rgba(46, 17, 54, .34);
+        }
+
+        .rv-mobile-progress {
+            gap: .3rem;
+            padding: .3rem;
+            border-color: rgba(197, 139, 210, .18);
+            background: rgba(16, 11, 19, .74);
+            box-shadow: inset 0 1px rgba(255,255,255,.035),
+                0 12px 30px rgba(0,0,0,.22);
+        }
+
+        .rv-mobile-progress-step {
+            color: #a99caf !important;
+        }
+
+        .rv-mobile-progress-step span {
+            border-color: rgba(197, 139, 210, .18);
+            background: #211726;
+            color: #c8bbcd !important;
+        }
+
+        .rv-mobile-progress-step.is-active {
+            background: linear-gradient(135deg, rgba(119,59,134,.38), rgba(119,59,134,.16));
+            color: #f7eef9 !important;
+            box-shadow: inset 0 0 0 1px rgba(197,139,210,.16);
+        }
+
+        .rv-mobile-progress-step.is-active span,
+        .rv-mobile-progress-step.is-done span {
+            border-color: #9b59aa;
+            background: linear-gradient(145deg, #9b59aa, var(--rv-primary));
+            box-shadow: 0 5px 14px rgba(65, 25, 74, .42);
+        }
+
+        .rv-mobile-step-number {
+            border: 1px solid rgba(231,194,239,.2);
+            background: linear-gradient(145deg, #a35bb3, #773b86 62%, #54235e);
+            box-shadow: 0 9px 22px rgba(58, 20, 68, .42);
+        }
+
+        .rv-mobile-section-eyebrow,
+        .rv-product-code,
+        .rv-tax-note,
+        .rv-motion-result-state {
+            color: var(--rv-primary-bright) !important;
+        }
+
+        .rv-mobile-page-title {
+            color: #fff9ff !important;
+            font-size: 1.34rem;
+        }
+
+        .rv-mobile-page-copy {
+            color: #ad9fb4 !important;
+        }
+
+        .st-key-rv_mobile_client_card > div {
+            border-top: 1px solid rgba(222, 170, 233, .28);
+            background:
+                radial-gradient(circle at 100% 0, rgba(119,59,134,.18), transparent 48%),
+                linear-gradient(145deg, #211725, #151019) !important;
+        }
+
+        .rv-mobile-client-label,
+        .rv-mobile-filter-label {
+            color: #c8b8cd !important;
+            letter-spacing: .09em;
+        }
+
+        .rv-mobile-client-check {
+            background: rgba(119,59,134,.28);
+            color: var(--rv-primary-bright) !important;
+            box-shadow: inset 0 0 0 1px rgba(197,139,210,.2);
+        }
+
+        input,
+        textarea,
+        [data-baseweb="select"] > div,
+        [data-baseweb="input"] > div {
+            border-color: rgba(197,139,210,.2) !important;
+            background-color: #120d16 !important;
+            color: var(--rv-text) !important;
+            caret-color: var(--rv-primary-bright) !important;
+        }
+
+        input:focus,
+        textarea:focus,
+        [data-baseweb="select"]:focus-within,
+        [data-baseweb="input"]:focus-within {
+            border-color: rgba(197,139,210,.68) !important;
+            box-shadow: 0 0 0 3px rgba(119,59,134,.2) !important;
+        }
+
+        [data-baseweb="popover"],
+        [data-baseweb="menu"],
+        [role="listbox"] {
+            border-color: rgba(197,139,210,.24) !important;
+            background: #18101c !important;
+            color: var(--rv-text) !important;
+        }
+
+        [role="option"]:hover,
+        [role="option"][aria-selected="true"] {
+            background: var(--rv-primary-soft) !important;
+        }
+
+        div[data-testid="stButton"] > button {
+            border-color: rgba(197,139,210,.24);
+            background: linear-gradient(145deg, #25192a, #1a121e);
+            color: #f6eff8;
+            box-shadow: inset 0 1px rgba(255,255,255,.045);
+            transition: transform .18s var(--rv-motion-snap),
+                box-shadow .18s var(--rv-motion-ui),
+                background-color .18s var(--rv-motion-ui),
+                border-color .18s var(--rv-motion-ui);
+        }
+
+        div[data-testid="stButton"] > button:hover:not(:disabled) {
+            border-color: rgba(197,139,210,.55);
+            background: linear-gradient(145deg, #302037, #211625);
+            box-shadow: 0 8px 24px rgba(43, 15, 51, .34);
+        }
+
+        button[kind="primary"] {
+            border-color: #9e5bae !important;
+            background: linear-gradient(135deg, #9350a3 0%, #773b86 58%, #652e72 100%) !important;
+            color: #fff !important;
+            box-shadow: inset 0 1px rgba(255,255,255,.14),
+                0 9px 24px rgba(65, 24, 75, .38) !important;
+        }
+
+        button[kind="primary"]:hover {
+            border-color: #b675c4 !important;
+            background: linear-gradient(135deg, #a65db6, #874596 60%, #71347e) !important;
+        }
+
+        .st-key-rv_mobile_search_area {
+            position: relative;
+            top: auto;
+            z-index: 4;
+            contain: none;
+            margin-bottom: .75rem;
+            padding: .72rem;
+            border-color: rgba(197,139,210,.34);
+            background:
+                linear-gradient(150deg, rgba(43,29,48,.98), rgba(21,16,25,.99));
+            box-shadow: 0 0 0 1px rgba(197,139,210,.05),
+                0 16px 38px rgba(0,0,0,.26);
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+        }
+
+        .st-key-rv_mobile_search_area:focus-within {
+            border-color: rgba(197,139,210,.72);
+            box-shadow: 0 0 0 3px rgba(119,59,134,.19),
+                0 18px 40px rgba(0,0,0,.3);
+        }
+
+        .st-key-rv_mobile_search_area iframe:not([title*="streamlit_js_eval"]) {
+            background: #120d16;
+            transform: translateZ(0);
+        }
+
+        .st-key-rv_mobile_catalog_surface {
+            padding-bottom: 4.4rem;
+        }
+
+        .rv-motion-result-meta {
+            color: #aa9caf !important;
+        }
+
+        .rv-motion-result-meta::after,
+        .st-key-rv_mobile_catalog_results::after {
+            background: linear-gradient(90deg, transparent, rgba(197,139,210,.18), transparent);
+        }
+
+        .rv-motion-result-state::before {
+            background: var(--rv-primary-bright);
+            box-shadow: 0 0 0 4px rgba(197,139,210,.09);
+        }
+
+        [class*="st-key-rv_mobile_product_card_"] {
+            border-left-color: #8f4e9e !important;
+        }
+
+        [class*="st-key-rv_mobile_product_card_"] > div {
+            border-color: rgba(197,139,210,.2) !important;
+            background:
+                radial-gradient(circle at 100% 0, rgba(119,59,134,.14), transparent 46%),
+                linear-gradient(145deg, #211725, #151019) !important;
+            box-shadow: 0 10px 28px rgba(0,0,0,.2);
+        }
+
+        [class*="st-key-rv_mobile_product_card_"] .rv-product-code {
+            border: 1px solid rgba(197,139,210,.18);
+            background: rgba(119,59,134,.22);
+        }
+
+        .rv-mobile-product-row .rv-product-price {
+            color: #e2b8ea !important;
+        }
+
+        .rv-in-cart-chip {
+            border: 1px solid rgba(197,139,210,.2);
+            background: rgba(119,59,134,.24);
+            color: #dbaee5 !important;
+        }
+
+        [class*="st-key-rv_mobile_cart_card_"] > div,
+        .rv-total-card {
+            border-color: rgba(197,139,210,.22) !important;
+            background: linear-gradient(145deg, #211725, #151019) !important;
+        }
+
+        .st-key-rv_mobile_bottom_bar {
+            border-color: rgba(197,139,210,.3);
+            background: linear-gradient(180deg, rgba(28,18,32,.985), rgba(14,9,17,.995));
+            box-shadow: 0 -16px 42px rgba(0,0,0,.42),
+                inset 0 1px rgba(255,255,255,.045);
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+        }
+
+        [data-testid="stBottom"],
+        [data-testid="stBottomBlockContainer"] {
+            background: linear-gradient(180deg, transparent, rgba(9,7,12,.93) 28%) !important;
+        }
+
+        .rv-mobile-bottom-total {
+            color: #e3bce9 !important;
+        }
+
+        [data-testid="stDialog"] > div,
+        [data-testid="stPopoverBody"] {
+            border: 1px solid rgba(197,139,210,.25) !important;
+            background: linear-gradient(145deg, #211725, #120d16) !important;
+            box-shadow: 0 24px 80px rgba(0,0,0,.56) !important;
+        }
+
+        .rv-new-client-intro {
+            border-color: rgba(197,139,210,.28);
+            background: linear-gradient(135deg, rgba(119,59,134,.26), #18101c);
+        }
+
+        .rv-new-client-icon {
+            background: linear-gradient(145deg, #a45db4, #773b86);
+            box-shadow: 0 8px 22px rgba(54,18,63,.4);
+        }
+
+        .rv-empty,
+        .rv-loading {
+            border-color: rgba(197,139,210,.22) !important;
+            background: linear-gradient(145deg, #211725, #151019) !important;
+        }
+
+        @media (max-width: 820px) {
+            [data-testid="stAppViewBlockContainer"],
+            [data-testid="stMainBlockContainer"] {
+                padding-top: .3rem;
+                padding-right: .62rem;
+                padding-left: .62rem;
+            }
+
+            .rv-mobile-appbar {
+                min-height: 4.15rem;
+                margin-bottom: .62rem;
+                padding: .68rem .72rem;
+                border: 1px solid rgba(197,139,210,.3);
+                border-radius: 1.15rem;
+                background:
+                    radial-gradient(circle at 12% -55%, rgba(197,139,210,.26), transparent 50%),
+                    linear-gradient(128deg, #211328 0%, #321a3b 55%, #171019 100%);
+                box-shadow: 0 16px 38px rgba(0,0,0,.32);
+            }
+
+            .rv-mobile-appbar .rv-brand-copy { display: block; }
+            .rv-mobile-appbar .rv-brand-title,
+            .rv-mobile-appbar .rv-brand-copy,
+            .rv-mobile-appbar .rv-pill { color: inherit !important; }
+
+            .rv-mobile-appbar .rv-pill {
+                border-color: rgba(197,139,210,.24);
+                background: rgba(9,6,11,.44);
+            }
+
+            .rv-brand-monogram {
+                flex-basis: 2.35rem;
+                width: 2.35rem;
+                height: 2.35rem;
+                border-radius: .8rem;
+            }
+
+            .rv-brand-title { font-size: 1.02rem; }
+            .rv-brand-copy { font-size: .48rem; }
+            .rv-mobile-status .rv-pill { font-size: .59rem; }
+
+            .rv-mobile-section-heading {
+                margin-top: .2rem;
+                margin-bottom: .82rem;
+            }
+
+            .rv-mobile-page-copy {
+                max-width: 31rem;
+            }
+
+            [class*="st-key-rv_mobile_product_card_"] {
+                animation-duration: .24s;
+            }
+        }
+
+        @media (max-width: 360px) {
+            .rv-brand-copy { display: none !important; }
+            .rv-mobile-status .rv-pill:first-child { display: none; }
+            .rv-mobile-progress-step { justify-content: center; }
+            .rv-mobile-progress-step { font-size: 0; }
+            .rv-mobile-progress-step span { font-size: .61rem; }
+        }
+
+        /* ================================================================
+           PULIDO PROFESIONAL MOBILE-FIRST
+           Corrige la densidad que Streamlit agrega a cada bloque, refuerza
+           la jerarquía tipográfica y deja más producto visible por pantalla.
+           ================================================================ */
+        @keyframes rv-professional-card-in {
+            from { opacity: .76; transform: translate3d(0, 4px, 0); }
+            to { opacity: 1; transform: translate3d(0, 0, 0); }
+        }
+
+        @media (max-width: 820px) {
+            .rv-mobile-appbar {
+                box-sizing: border-box;
+                min-height: 3.8rem;
+                margin-bottom: .48rem;
+                padding: .54rem .62rem;
+                border-radius: 1rem;
+            }
+
+            .rv-brand-monogram {
+                flex-basis: 2.15rem;
+                width: 2.15rem;
+                height: 2.15rem;
+                border-radius: .72rem;
+                font-size: .64rem;
+            }
+
+            .rv-brand-title {
+                margin: 0 !important;
+                font-size: .96rem !important;
+                line-height: 1 !important;
+            }
+
+            .rv-brand-copy {
+                margin-top: .16rem !important;
+                font-size: .45rem !important;
+                line-height: 1.15 !important;
+            }
+
+            .rv-mobile-status { gap: .25rem; }
+            .rv-mobile-status .rv-pill {
+                padding: .27rem .42rem;
+                font-size: .58rem !important;
+                line-height: 1.1;
+            }
+
+            .rv-mobile-progress {
+                gap: .22rem;
+                margin-bottom: .58rem;
+                padding: .22rem;
+                border-radius: .86rem;
+            }
+
+            .rv-mobile-progress-step {
+                gap: .3rem;
+                min-height: 1.95rem;
+                padding: .3rem .34rem;
+                border-radius: .62rem;
+                font-size: .6rem !important;
+                line-height: 1.1;
+            }
+
+            .rv-mobile-progress-step span {
+                flex-basis: 1.18rem;
+                width: 1.18rem;
+                height: 1.18rem;
+                border-radius: .38rem;
+                font-size: .55rem !important;
+            }
+
+            .st-key-rv_mobile_client_card {
+                gap: .48rem !important;
+                margin-bottom: .54rem;
+                padding: .7rem !important;
+                border-color: rgba(197,139,210,.25) !important;
+                border-radius: 1rem !important;
+            }
+
+            /* El key de un contenedor vive en el bloque exterior. La regla
+               anterior aplicaba relleno también a cada hijo y duplicaba el
+               alto de clientes y productos. */
+            .st-key-rv_mobile_client_card
+                > [data-testid="stElementContainer"],
+            .st-key-rv_mobile_client_card
+                > [data-testid="stLayoutWrapper"],
+            [class*="st-key-rv_mobile_product_card_"]
+                > [data-testid="stElementContainer"],
+            [class*="st-key-rv_mobile_product_card_"]
+                > [data-testid="stLayoutWrapper"] {
+                padding: 0 !important;
+            }
+
+            /* Streamlit aplica un margen negativo al contenedor Markdown.
+               Reservamos sólo la separación necesaria para que títulos,
+               etiquetas y acciones nunca se monten entre sí. */
+            .st-key-rv_mobile_client_card
+                > [data-testid="stElementContainer"]:has(.rv-mobile-client-head),
+            .st-key-rv_mobile_search_area
+                > [data-testid="stElementContainer"]:has(.rv-mobile-filter-label),
+            [class*="st-key-rv_mobile_product_card_"]
+                > [data-testid="stElementContainer"]:has(.rv-mobile-product-feedback) {
+                padding-bottom: .55rem !important;
+            }
+
+            .rv-mobile-client-head {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: .65rem;
+            }
+
+            .rv-mobile-client-title {
+                margin: 0 !important;
+                color: #f8f1fa !important;
+                font-size: .76rem !important;
+                font-weight: 900;
+                line-height: 1.2 !important;
+            }
+
+            .rv-mobile-client-step {
+                flex: 0 0 auto;
+                padding: .2rem .4rem;
+                border: 1px solid rgba(197,139,210,.2);
+                border-radius: 999px;
+                background: rgba(119,59,134,.18);
+                color: var(--rv-primary-bright) !important;
+                font-size: .53rem !important;
+                font-weight: 950;
+                letter-spacing: .07em;
+                line-height: 1.1 !important;
+                text-transform: uppercase;
+            }
+
+            .st-key-rv_mobile_client_card div[data-testid="stButton"] > button {
+                min-height: 2.42rem;
+                border-radius: .68rem;
+                font-size: .72rem;
+            }
+
+            .rv-mobile-client-compact { padding-bottom: .18rem; }
+            .rv-mobile-client-compact strong {
+                font-size: .78rem !important;
+                line-height: 1.2 !important;
+            }
+            .rv-mobile-client-compact p {
+                font-size: .63rem !important;
+                line-height: 1.25 !important;
+            }
+
+            .rv-mobile-section-heading {
+                gap: .56rem;
+                margin: .08rem 0 .58rem;
+            }
+
+            .rv-mobile-step-number {
+                width: 2rem;
+                height: 2rem;
+                border-radius: .66rem;
+                font-size: .68rem !important;
+            }
+
+            .rv-mobile-section-eyebrow {
+                margin: .01rem 0 .04rem !important;
+                font-size: .55rem !important;
+                line-height: 1.15 !important;
+            }
+
+            .rv-mobile-page-title {
+                margin: 0 !important;
+                font-size: 1.08rem !important;
+                line-height: 1.12 !important;
+                letter-spacing: -.035em;
+            }
+
+            .rv-mobile-page-copy {
+                margin: .14rem 0 0 !important;
+                font-size: .69rem !important;
+                line-height: 1.38 !important;
+            }
+
+            .st-key-rv_mobile_search_area {
+                gap: .48rem !important;
+                margin-bottom: .62rem;
+                padding: .64rem;
+                border-radius: 1rem;
+            }
+
+            .rv-mobile-filter-label {
+                margin: 0 !important;
+                font-size: .57rem !important;
+                line-height: 1.15 !important;
+            }
+
+            .st-key-rv_mobile_search_area
+                iframe:not([title*="streamlit_js_eval"]) {
+                height: 3.3rem !important;
+                min-height: 3.3rem !important;
+                border: 1px solid rgba(197,139,210,.12);
+                border-radius: .72rem;
+            }
+
+            .st-key-rv_mobile_search_controls [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"]:last-child {
+                flex-basis: 3rem !important;
+            }
+
+            .st-key-rv_mobile_search_controls div[data-testid="stButton"] > button,
+            .st-key-rv_mobile_filter_controls button,
+            .st-key-rv_mobile_filter_controls [data-baseweb="select"] > div {
+                min-height: 2.48rem !important;
+                border-radius: .65rem !important;
+                font-size: .7rem !important;
+            }
+
+            .st-key-rv_mobile_filter_controls [role="radiogroup"] {
+                display: flex !important;
+                width: 100% !important;
+                flex-flow: row nowrap !important;
+            }
+
+            .st-key-rv_mobile_filter_controls [role="radiogroup"] > button {
+                min-width: 0 !important;
+                flex: 1 1 0 !important;
+                padding-right: .3rem !important;
+                padding-left: .3rem !important;
+            }
+
+            .rv-motion-result-meta {
+                margin: .04rem 0 .4rem;
+                font-size: .62rem !important;
+                line-height: 1.15;
+            }
+
+            .rv-motion-result-state::before {
+                width: .32rem;
+                height: .32rem;
+            }
+
+            [class*="st-key-rv_mobile_product_card_"] {
+                gap: .5rem !important;
+                padding: .68rem !important;
+                border: 1px solid rgba(197,139,210,.2) !important;
+                border-left: 3px solid #8f4e9e !important;
+                border-radius: .96rem !important;
+                animation: rv-professional-card-in .22s var(--rv-motion-ui) both;
+                will-change: auto;
+            }
+
+            [class*="st-key-rv_mobile_product_card_"] > div {
+                background: transparent !important;
+                box-shadow: none !important;
+            }
+
+            .rv-mobile-product-feedback {
+                position: relative;
+                min-height: 4.65rem;
+                padding-bottom: 1.18rem;
+            }
+
+            .rv-mobile-product-row {
+                grid-template-columns: minmax(0, 1fr) auto;
+                gap: .12rem .65rem;
+                padding: 0;
+            }
+
+            [class*="st-key-rv_mobile_product_card_"] .rv-product-code {
+                padding: .13rem .36rem;
+                font-size: .54rem !important;
+                line-height: 1.12 !important;
+            }
+
+            .rv-mobile-product-row .rv-product-name {
+                font-size: .78rem !important;
+                line-height: 1.24 !important;
+            }
+
+            .rv-mobile-product-row .rv-product-price {
+                font-size: .84rem !important;
+                line-height: 1.15 !important;
+            }
+
+            .rv-tax-note {
+                grid-column: 1 / -1;
+                margin: .1rem 0 0 !important;
+                font-size: .57rem !important;
+                line-height: 1.2 !important;
+            }
+
+            .rv-mobile-cart-status {
+                position: absolute;
+                bottom: 0;
+                left: 0;
+                min-height: 1rem;
+            }
+
+            .rv-in-cart-chip {
+                padding: .12rem .36rem;
+                font-size: .55rem !important;
+                line-height: 1.15 !important;
+            }
+
+            [class*="st-key-rv_mobile_product_card_"]
+                [data-testid="stHorizontalBlock"]
+                > [data-testid="stColumn"]:last-child {
+                flex-basis: 4.35rem !important;
+            }
+
+            [class*="st-key-rv_mobile_product_card_"]
+                div[data-testid="stButton"] > button {
+                min-height: 2.55rem;
+                border-radius: .68rem;
+                font-size: .72rem;
+                line-height: 1.1;
+            }
+
+            .st-key-rv_mobile_pagination { margin-top: .18rem; }
+            .st-key-rv_mobile_pagination div[data-testid="stButton"] > button {
+                min-height: 2.48rem;
+                font-size: .68rem;
+            }
+
+            .rv-page-status {
+                min-height: 2.48rem;
+                font-size: .62rem !important;
+            }
+
+            .st-key-rv_mobile_bottom_bar {
+                position: fixed !important;
+                z-index: 1000;
+                bottom: calc(.42rem + env(safe-area-inset-bottom));
+                left: 50%;
+                width: min(calc(100vw - 1.25rem), 48rem);
+                box-sizing: border-box;
+                gap: .42rem !important;
+                padding: .5rem .5rem calc(.46rem + env(safe-area-inset-bottom));
+                border-radius: 1.05rem;
+                transform: translateX(-50%);
+            }
+
+            /* El markdown con HTML hereda un margen inferior negativo de
+               Streamlit. En una barra fija ese margen colapsaba la fila del
+               resumen y la dejaba visualmente detrás de los botones. */
+            .st-key-rv_mobile_bottom_bar [data-testid="stMarkdownContainer"] {
+                margin-bottom: 0 !important;
+            }
+
+            .st-key-rv_mobile_bottom_bar [data-testid="stElementContainer"]:has(
+                .rv-mobile-bottom-summary
+            ),
+            .st-key-rv_mobile_bottom_bar [data-testid="stMarkdown"]:has(
+                .rv-mobile-bottom-summary
+            ) {
+                min-height: 1.65rem !important;
+            }
+
+            .rv-mobile-bottom-summary {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                min-height: 1.65rem;
+                align-items: center;
+                gap: .75rem;
+                padding: 0 .16rem .14rem;
+            }
+            .rv-mobile-bottom-copy {
+                overflow: hidden;
+                font-size: .64rem !important;
+                line-height: 1.2 !important;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .rv-mobile-bottom-total {
+                font-size: .9rem !important;
+                line-height: 1.1 !important;
+            }
+
+            .st-key-rv_mobile_bottom_bar div[data-testid="stButton"] > button {
+                min-height: 2.8rem;
+                border-radius: .76rem;
+                font-size: .72rem;
+            }
+
+            [class*="st-key-rv_mobile_panel_motion_"] {
+                min-height: max(26rem, calc(100dvh - 17rem));
+            }
+
+            button:focus-visible,
+            input:focus-visible,
+            [role="combobox"]:focus-visible {
+                outline: 2px solid var(--rv-primary-bright) !important;
+                outline-offset: 2px !important;
+            }
+        }
+
+        @media (max-width: 360px) {
+            .rv-mobile-status .rv-pill:first-child {
+                display: inline-flex;
+                align-items: center;
+            }
+            .rv-mobile-status .rv-pill:last-child { display: none; }
+        }
+
+        @media (min-width: 821px) {
+            .rv-classic-hero {
+                border-color: rgba(197,139,210,.28);
+                background:
+                    radial-gradient(circle at 88% -40%, rgba(197,139,210,.3), transparent 35%),
+                    linear-gradient(128deg, #201126 0%, #773b86 58%, #2a1531 100%);
+                box-shadow: 0 20px 60px rgba(38,12,45,.38);
+            }
+
+            .rv-classic-title span { color: #fff !important; }
+            .rv-classic-title strong {
+                color: #e7b9ef !important;
+                font-weight: 1000;
+            }
+            .rv-classic-title em {
+                margin-left: .34rem;
+                color: rgba(255,255,255,.72) !important;
+                font-size: .72em;
+                font-style: normal;
+                font-weight: 760;
+            }
+
+            .rv-classic-status-card,
+            .rv-classic-step,
+            .rv-classic-product-preview,
+            .rv-classic-promo-preview {
+                border-color: rgba(197,139,210,.2);
+                background: linear-gradient(145deg, #211725, #151019);
+            }
+
+            .rv-classic-step.active {
+                border-color: #9955a8;
+                box-shadow: 0 0 0 .18rem rgba(119,59,134,.22);
+            }
+        }
+
         @media (prefers-reduced-motion: reduce) {
             html { scroll-behavior: auto; }
 
@@ -2437,12 +3285,14 @@ def solicitar_envio() -> None:
     if st.session_state.get("envio_en_progreso", False):
         return
     st.session_state.confirmar_envio = True
+    st.rerun(scope="app")
 
 
 def solicitar_nuevo_cliente() -> None:
     if st.session_state.get("alta_cliente_en_progreso", False):
         return
     st.session_state.nuevo_cliente_pendiente = True
+    st.rerun(scope="app")
 
 
 def seleccionar_cliente_movil() -> None:
@@ -2462,25 +3312,50 @@ def habilitar_estabilidad_viewport_movil() -> None:
     """Conserva la tarjeta tocada en el mismo sitio durante cada rerun."""
 
     script_source = r"""
-(() => {
-  if (window.__rvViewportStabilityBound) return;
-  window.__rvViewportStabilityBound = true;
+((host) => {
+  const window = host;
+  const document = host.document;
+  const performance = host.performance;
+  const CSS = host.CSS;
+
+  if (document.documentElement.dataset.rvViewportStabilityBound === '1') return;
+  document.documentElement.dataset.rvViewportStabilityBound = '1';
+  let viewportLock = null;
+  let viewportLockFrame = null;
 
   const cancelLock = () => {
-    if (window.__rvViewportLock) window.__rvViewportLock.until = 0;
+    if (viewportLock) viewportLock.until = 0;
+    window.localStorage.removeItem('rv-mobile-viewport-lock');
+  };
+
+  const persistLock = (durationMs) => {
+    if (!viewportLock) return;
+    viewportLock.token = `${Date.now()}-${Math.random()}`;
+    viewportLock.expiresAt = Date.now() + durationMs;
+    window.localStorage.setItem(
+      'rv-mobile-viewport-lock',
+      JSON.stringify(viewportLock)
+    );
   };
 
   const keepStable = (now) => {
-    const lock = window.__rvViewportLock;
+    const lock = viewportLock;
     if (!lock || now > lock.until) {
-      window.__rvViewportLockFrame = null;
+      viewportLockFrame = null;
       return;
     }
 
     const scroller = document.querySelector('[data-testid="stMain"]');
     if (scroller) {
       let desired = lock.scrollTop;
-      if (lock.anchorClass) {
+      if (lock.resetToTop) {
+        const progress = Math.min(
+          1,
+          Math.max(0, (now - lock.startedAt) / 260)
+        );
+        const eased = 1 - Math.pow(1 - progress, 3);
+        desired = lock.fromScrollTop * (1 - eased);
+      } else if (lock.anchorClass) {
         const anchor = document.querySelector(
           '.' + CSS.escape(lock.anchorClass)
         );
@@ -2498,7 +3373,7 @@ def habilitar_estabilidad_viewport_movil() -> None:
       }
     }
 
-    window.__rvViewportLockFrame = window.requestAnimationFrame(keepStable);
+    viewportLockFrame = window.requestAnimationFrame(keepStable);
   };
 
   document.addEventListener('pointerdown', (event) => {
@@ -2515,6 +3390,32 @@ def habilitar_estabilidad_viewport_movil() -> None:
     const isFixedNavigation = candidate?.classList.contains(
       'st-key-rv_mobile_bottom_bar'
     );
+
+    if (isFixedNavigation) {
+      const isCurrentTab = button.getAttribute('kind') === 'primary';
+      if (isCurrentTab) {
+        cancelLock();
+        return;
+      }
+
+      const startedAt = performance.now();
+      viewportLock = {
+        scrollTop: 0,
+        anchorClass: null,
+        anchorTop: 0,
+        resetToTop: true,
+        fromScrollTop: scroller.scrollTop,
+        startedAt,
+        until: startedAt + 1400,
+      };
+      persistLock(1400);
+
+      if (!viewportLockFrame) {
+        viewportLockFrame = window.requestAnimationFrame(keepStable);
+      }
+      return;
+    }
+
     const anchor = candidate && scroller.contains(candidate) && !isFixedNavigation
       ? candidate
       : null;
@@ -2522,15 +3423,16 @@ def habilitar_estabilidad_viewport_movil() -> None:
       ? [...anchor.classList].find((name) => name.startsWith('st-key-rv_mobile_'))
       : null;
 
-    window.__rvViewportLock = {
+    viewportLock = {
       scrollTop: scroller.scrollTop,
       anchorClass: anchorClass || null,
       anchorTop: anchor ? anchor.getBoundingClientRect().top : 0,
       until: performance.now() + 2400,
     };
+    persistLock(2400);
 
-    if (!window.__rvViewportLockFrame) {
-      window.__rvViewportLockFrame = window.requestAnimationFrame(keepStable);
+    if (!viewportLockFrame) {
+      viewportLockFrame = window.requestAnimationFrame(keepStable);
     }
   }, true);
 
@@ -2542,94 +3444,77 @@ def habilitar_estabilidad_viewport_movil() -> None:
     passive: true,
     capture: true,
   });
-})();
+})(window.parent);
 """
 
     streamlit_js_eval(
-        js_expressions=(
-            "(() => { try {"
-            "const host = window.parent;"
-            "if (host.__rvViewportStabilityBound) return true;"
-            f"host.eval({json.dumps(script_source)});"
-            "return true;"
-            "} catch (_) { return false; } })()"
-        ),
+        js_expressions=script_source,
         want_output=False,
         key="rv_mobile_viewport_stability",
     )
 
 
-def habilitar_motion_busqueda_movil() -> None:
-    """Enfoca la búsqueda con un desplazamiento breve, único y predecible."""
+def restaurar_estabilidad_viewport_movil() -> None:
+    """Reaplica el ancla después de que un fragmento termina de renderizar."""
 
-    version = int(st.session_state.get("busqueda_widget_version", 0))
+    script_source = r"""
+(() => {
+  const host = window.parent;
+  const storageKey = 'rv-mobile-viewport-lock';
+  let lock;
+  try {
+    lock = JSON.parse(host.localStorage.getItem(storageKey) || 'null');
+  } catch (_) {
+    host.localStorage.removeItem(storageKey);
+    return false;
+  }
+  if (!lock || Date.now() > Number(lock.expiresAt || 0)) {
+    host.localStorage.removeItem(storageKey);
+    return false;
+  }
+  const settle = () => {
+    let current;
+    try {
+      current = JSON.parse(host.localStorage.getItem(storageKey) || 'null');
+    } catch (_) {
+      current = null;
+    }
+    if (!current || current.token !== lock.token) return;
+
+    const scroller = host.document.querySelector('[data-testid="stMain"]');
+    if (scroller) {
+      let desired = Number(lock.scrollTop || 0);
+      if (lock.resetToTop) {
+        desired = 0;
+      } else if (lock.anchorClass) {
+        const anchor = host.document.querySelector(
+          '.' + host.CSS.escape(lock.anchorClass)
+        );
+        if (anchor) {
+          desired = scroller.scrollTop
+            + anchor.getBoundingClientRect().top
+            - Number(lock.anchorTop || 0);
+        }
+      }
+      const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      scroller.scrollTop = Math.max(0, Math.min(maxTop, desired));
+    }
+
+    if (Date.now() <= Number(lock.expiresAt || 0)) {
+      host.requestAnimationFrame(settle);
+    } else {
+      host.localStorage.removeItem(storageKey);
+    }
+  };
+
+  host.requestAnimationFrame(() => host.requestAnimationFrame(settle));
+  return true;
+})()
+"""
     streamlit_js_eval(
-        js_expressions=(
-            "(() => { try {"
-            "const host = window.parent;"
-            "const doc = host.document;"
-            "const bind = () => {"
-            "const frame = doc.querySelector('iframe[title=\"st_keyup.st_keyup\"]');"
-            "const scroller = doc.querySelector('[data-testid=\"stMain\"]');"
-            "const area = doc.querySelector('.st-key-rv_mobile_search_area');"
-            "const input = frame?.contentDocument?.querySelector('#input_box');"
-            "if (!frame || !scroller || !area || !input || input.dataset.rvMotionBound) return;"
-            "input.dataset.rvMotionBound = 'true';"
-            "const keepPinned = () => {"
-            # Mantiene el ancla durante todo el ciclo del componente y del
-            # fragmento; el plazo se renueva con cada tecla.
-            "host.__rvSearchPinUntil = host.performance.now() + 2800;"
-            "if (host.__rvSearchPinFrame) return;"
-            "const pinStep = (now) => {"
-            "if (now > (host.__rvSearchPinUntil || 0)) {"
-            "host.__rvSearchPinFrame = null;"
-            "return;"
-            "}"
-            "const liveScroller = doc.querySelector('[data-testid=\"stMain\"]');"
-            "const liveArea = doc.querySelector('.st-key-rv_mobile_search_area');"
-            "if (liveScroller && liveArea) {"
-            "const desired = Math.max(0, liveScroller.scrollTop "
-            "+ liveArea.getBoundingClientRect().top "
-            "- liveScroller.getBoundingClientRect().top - 6);"
-            "if (Math.abs(desired - liveScroller.scrollTop) > 1) liveScroller.scrollTop = desired;"
-            "}"
-            "host.__rvSearchPinFrame = host.requestAnimationFrame(pinStep);"
-            "};"
-            "host.__rvSearchPinFrame = host.requestAnimationFrame(pinStep);"
-            "};"
-            "input.addEventListener('pointerdown', (event) => {"
-            "if (event.button !== undefined && event.button !== 0) return;"
-            "if (input === frame.contentDocument.activeElement) return;"
-            "event.preventDefault();"
-            "try { input.focus({preventScroll: true}); } catch (_) { input.focus(); }"
-            "const start = scroller.scrollTop;"
-            "const top = Math.max(0, start + area.getBoundingClientRect().top "
-            "- scroller.getBoundingClientRect().top - 6);"
-            "const distance = top - start;"
-            "const reduce = host.matchMedia('(prefers-reduced-motion: reduce)').matches;"
-            "if (reduce || Math.abs(distance) < 3) { scroller.scrollTop = top; return; }"
-            "if (host.__rvSearchFocusFrame) host.cancelAnimationFrame(host.__rvSearchFocusFrame);"
-            "const startedAt = host.performance.now();"
-            "const step = (now) => {"
-            "const progress = Math.min(1, (now - startedAt) / 260);"
-            "const eased = 1 - Math.pow(1 - progress, 3);"
-            "scroller.scrollTop = start + distance * eased;"
-            "if (progress < 1) host.__rvSearchFocusFrame = host.requestAnimationFrame(step);"
-            "else host.__rvSearchFocusFrame = null;"
-            "};"
-            "host.__rvSearchFocusFrame = host.requestAnimationFrame(step);"
-            "}, {passive: false});"
-            "input.addEventListener('keyup', keepPinned);"
-            "};"
-            "bind();"
-            "host.requestAnimationFrame(bind);"
-            "host.setTimeout(bind, 160);"
-            "host.setTimeout(bind, 420);"
-            "return true;"
-            "} catch (_) { return false; } })()"
-        ),
+        js_expressions=f"{script_source}\n/* {time.time_ns()} */",
         want_output=False,
-        key=f"rv_mobile_search_motion_{version}",
+        key="rv_mobile_viewport_restore",
     )
 
 
@@ -3829,8 +4714,8 @@ def render_desktop_clasico() -> None:
         <div class="rv-classic-hero">
             <div class="rv-classic-hero-grid">
                 <div>
-                    <p class="rv-classic-kicker">Captura de pedidos</p>
-                    <h1 class="rv-classic-title">🐾 RapyVet Pedidos</h1>
+                    <p class="rv-classic-kicker">Distribuidor veterinario</p>
+                    <h1 class="rv-classic-title"><span>Rapy</span><strong>Vet</strong><em>Pedidos</em></h1>
                     <p class="rv-classic-subtitle">
                         Interfaz de escritorio: selecciona el cliente, agrega
                         ventas o promociones y revisa el pedido antes de enviarlo.
@@ -4133,16 +5018,16 @@ def render_encabezado() -> None:
         st.markdown(
             f"""
             <div class="rv-mobile-appbar">
-                <div class="rv-brand">
-                    <div class="rv-brand-icon">🐾</div>
+                <div class="rv-brand" aria-label="RapyVet Distribuidor Veterinario">
+                    <div class="rv-brand-monogram" aria-hidden="true">RV</div>
                     <div>
-                        <p class="rv-brand-title">RapyVet Pedidos</p>
-                        <p class="rv-brand-copy">Pedidos rápidos</p>
+                        <p class="rv-brand-title"><span>Rapy</span><strong>Vet</strong></p>
+                        <p class="rv-brand-copy">Distribuidor veterinario</p>
                     </div>
                 </div>
                 <div class="rv-mobile-status">
                     <span class="rv-pill"><span class="rv-online-dot"></span>Odoo</span>
-                    <span class="rv-pill">{unidades} uds.</span>
+                    <span class="rv-pill rv-cart-pill">{unidades} uds.</span>
                 </div>
             </div>
             """,
@@ -4153,11 +5038,11 @@ def render_encabezado() -> None:
     st.markdown(
         f"""
         <div class="rv-topbar">
-            <div class="rv-brand">
-                <div class="rv-brand-icon">🐾</div>
+            <div class="rv-brand" aria-label="RapyVet Distribuidor Veterinario">
+                <div class="rv-brand-monogram" aria-hidden="true">RV</div>
                 <div>
-                    <p class="rv-brand-title">RapyVet Pedidos</p>
-                    <p class="rv-brand-copy">Captura rápida conectada con Odoo</p>
+                    <p class="rv-brand-title"><span>Rapy</span><strong>Vet</strong></p>
+                    <p class="rv-brand-copy">Distribuidor veterinario · Pedidos conectados con Odoo</p>
                 </div>
             </div>
             <div class="rv-top-stats">
@@ -4250,7 +5135,12 @@ def render_cliente() -> None:
                 return
 
             st.markdown(
-                '<p class="rv-mobile-client-label">1 · Selecciona el cliente del pedido</p>',
+                """
+                <div class="rv-mobile-client-head">
+                    <p class="rv-mobile-client-title">Cliente del pedido</p>
+                    <span class="rv-mobile-client-step">Paso 01</span>
+                </div>
+                """,
                 unsafe_allow_html=True,
             )
             selector_guardado = st.session_state.get("mobile_cliente_selector")
@@ -4328,9 +5218,9 @@ def render_encabezado_catalogo_movil() -> None:
         <div class="rv-mobile-section-heading" id="rv-mobile-catalog-heading">
             <span class="rv-mobile-step-number">02</span>
             <div>
-                <p class="rv-mobile-section-eyebrow">Catálogo de campo</p>
-                <p class="rv-mobile-page-title">Arma el pedido</p>
-                <p class="rv-mobile-page-copy">Encuentra el producto y agrega una unidad sin perder tu lugar.</p>
+                <p class="rv-mobile-section-eyebrow">Catálogo RapyVet</p>
+                <p class="rv-mobile-page-title">Encuentra el producto</p>
+                <p class="rv-mobile-page-copy">Busca el medicamento por nombre o código y agrégalo sin perder tu lugar.</p>
             </div>
         </div>
         """,
@@ -4362,7 +5252,7 @@ def render_catalogo(*, movil: bool, mostrar_encabezado: bool = True) -> None:
         with search_context:
             if movil:
                 st.markdown(
-                    '<p class="rv-mobile-filter-label">Buscar en el catálogo</p>',
+                    '<p class="rv-mobile-filter-label">Medicamento o producto</p>',
                     unsafe_allow_html=True,
                 )
                 with st.container(key="rv_mobile_search_controls"):
@@ -4370,7 +5260,7 @@ def render_catalogo(*, movil: bool, mostrar_encabezado: bool = True) -> None:
                     with buscar_col:
                         busqueda_actual = st_keyup(
                             "Buscar producto",
-                            placeholder="Nombre o código…",
+                            placeholder="Nombre, producto o código…",
                             key=(
                                 "busqueda_pos_input_"
                                 f"{st.session_state.busqueda_widget_version}"
@@ -4391,7 +5281,6 @@ def render_catalogo(*, movil: bool, mostrar_encabezado: bool = True) -> None:
                             key="mobile_limpiar_busqueda",
                             on_click=limpiar_busqueda_catalogo,
                         )
-                habilitar_motion_busqueda_movil()
             else:
                 st.text_input(
                     "Buscar producto",
@@ -4411,6 +5300,11 @@ def render_catalogo(*, movil: bool, mostrar_encabezado: bool = True) -> None:
                         st.segmented_control(
                             "Vista",
                             options=["Todos", "Recientes"],
+                            format_func=(
+                                lambda opcion: (
+                                    "Últimos" if opcion == "Recientes" else opcion
+                                )
+                            ),
                             key="vista_pos",
                             on_change=resetear_catalogo,
                             label_visibility="collapsed",
@@ -4469,7 +5363,7 @@ def render_catalogo(*, movil: bool, mostrar_encabezado: bool = True) -> None:
                 f"""
                 <div class="rv-motion-result-meta" aria-live="polite">
                     <span>{texto_resultados}</span>
-                    <span class="rv-motion-result-state">Resultados listos</span>
+                    <span class="rv-motion-result-state">Listo para agregar</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -4541,17 +5435,17 @@ def render_catalogo(*, movil: bool, mostrar_encabezado: bool = True) -> None:
                     )
                     agregar_col, promo_col = st.columns([3, 1.25], gap="small")
                     with agregar_col:
-                        if st.button(
+                        st.button(
                             "＋ Agregar",
                             key=f"mobile_quick_add_{producto_id}",
                             type="primary",
                             use_container_width=True,
-                        ):
-                            agregar_venta_rapida(producto_id)
-                            st.rerun(scope="app")
+                            on_click=agregar_venta_rapida,
+                            args=(producto_id,),
+                        )
                     with promo_col:
                         if st.button(
-                            "🎁 Promo",
+                            "Promo",
                             key=f"mobile_promo_{producto_id}",
                             help="Agregar promoción",
                             use_container_width=True,
@@ -4664,9 +5558,8 @@ def render_catalogo(*, movil: bool, mostrar_encabezado: bool = True) -> None:
                         st.rerun()
 
 
-@st.fragment
 def render_catalogo_movil_fragmento() -> None:
-    """Actualiza búsqueda y resultados sin reconstruir el resto de la app."""
+    """Renderiza el catálogo dentro de la experiencia móvil fragmentada."""
 
     render_catalogo(movil=True, mostrar_encabezado=False)
 
@@ -4679,9 +5572,9 @@ def render_carrito_panel(*, movil: bool) -> None:
             <div class="rv-mobile-section-heading">
                 <span class="rv-mobile-step-number">03</span>
                 <div>
-                    <p class="rv-mobile-section-eyebrow">Revisión final</p>
-                    <p class="rv-mobile-page-title">Revisa el carrito</p>
-                    <p class="rv-mobile-page-copy">Ajusta cantidades y confirma antes de enviar a Odoo.</p>
+                    <p class="rv-mobile-section-eyebrow">Pedido en revisión</p>
+                    <p class="rv-mobile-page-title">Confirma tu pedido</p>
+                    <p class="rv-mobile-page-copy">Revisa cantidades y total antes de enviarlo a Odoo.</p>
                 </div>
             </div>
             """,
@@ -4737,77 +5630,81 @@ def render_navegacion_movil() -> None:
     listo = bool(st.session_state.cliente_id and st.session_state.carrito)
     texto_unidades = f"{unidades} {'unidad' if unidades == 1 else 'unidades'}"
 
-    with st.bottom:
-        with st.container(key="rv_mobile_bottom_bar"):
-            if activo == "Carrito" and st.session_state.carrito:
-                total_col, enviar_col = st.columns([1.05, 1.65], gap="small")
-                with total_col:
-                    st.markdown(
-                        f"""
-                        <div class="rv-mobile-bottom-summary">
-                            <div>
-                                <p class="rv-mobile-bottom-copy">{texto_unidades}</p>
-                                <p class="rv-mobile-bottom-total">{moneda(total)}</p>
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                with enviar_col:
-                    st.button(
-                        "Crear pedido" if st.session_state.cliente_id else "Elige un cliente",
-                        help=(
-                            "Revisar y crear el pedido en Odoo"
-                            if st.session_state.cliente_id
-                            else "Selecciona un cliente en la parte superior"
-                        ),
-                        type="primary",
-                        use_container_width=True,
-                        disabled=(
-                            not listo
-                            or st.session_state.get("envio_en_progreso", False)
-                        ),
-                        key="mobile_bottom_checkout",
-                        on_click=solicitar_envio,
-                    )
-            else:
+    with st.container(key="rv_mobile_bottom_bar"):
+        if activo == "Carrito" and st.session_state.carrito:
+            total_col, enviar_col = st.columns([1.05, 1.65], gap="small")
+            with total_col:
                 st.markdown(
                     f"""
-                        <div class="rv-mobile-bottom-summary">
-                        <p class="rv-mobile-bottom-copy">{texto_unidades} en el carrito</p>
-                        <p class="rv-mobile-bottom-total">{moneda(total)}</p>
+                    <div class="rv-mobile-bottom-summary">
+                        <div>
+                            <p class="rv-mobile-bottom-copy">{texto_unidades}</p>
+                            <p class="rv-mobile-bottom-total">{moneda(total)}</p>
+                        </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
-
-            productos_col, carrito_col = st.columns(2, gap="small")
-            with productos_col:
+            with enviar_col:
                 st.button(
-                    "🛍️ Productos",
-                    type="primary" if activo == "Productos" else "secondary",
+                    "Crear pedido" if st.session_state.cliente_id else "Elige un cliente",
+                    help=(
+                        "Revisar y crear el pedido en Odoo"
+                        if st.session_state.cliente_id
+                        else "Selecciona un cliente en la parte superior"
+                    ),
+                    type="primary",
                     use_container_width=True,
-                    key="mobile_nav_productos",
-                    on_click=cambiar_tab_movil,
-                    args=("Productos",),
+                    disabled=(
+                        not listo
+                        or st.session_state.get("envio_en_progreso", False)
+                    ),
+                    key="mobile_bottom_checkout",
+                    on_click=solicitar_envio,
                 )
-            with carrito_col:
-                st.button(
-                    f"🛒 Carrito · {len(elementos)}",
-                    type="primary" if activo == "Carrito" else "secondary",
-                    use_container_width=True,
-                    key="mobile_nav_carrito",
-                    on_click=cambiar_tab_movil,
-                    args=("Carrito",),
-                )
+        else:
+            st.markdown(
+                f"""
+                    <div class="rv-mobile-bottom-summary">
+                    <p class="rv-mobile-bottom-copy">{texto_unidades} en el carrito</p>
+                    <p class="rv-mobile-bottom-total">{moneda(total)}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        productos_col, carrito_col = st.columns(2, gap="small")
+        with productos_col:
+            st.button(
+                "Productos",
+                type="primary" if activo == "Productos" else "secondary",
+                use_container_width=True,
+                key="mobile_nav_productos",
+                on_click=cambiar_tab_movil,
+                args=("Productos",),
+            )
+        with carrito_col:
+            st.button(
+                f"Carrito · {len(elementos)}",
+                type="primary" if activo == "Carrito" else "secondary",
+                use_container_width=True,
+                key="mobile_nav_carrito",
+                on_click=cambiar_tab_movil,
+                args=("Carrito",),
+            )
 
 
-if ES_MOVIL:
-    # En teléfono se conserva íntegramente la experiencia mobile-first: una
-    # pantalla para Productos, otra para Carrito y navegación inferior fija.
+@st.fragment
+def render_experiencia_movil_fragmento() -> None:
+    """Actualiza la interfaz móvil sin reconstruir toda la aplicación."""
+
+    if st.session_state.notificacion_pendiente:
+        aviso = st.session_state.notificacion_pendiente
+        st.toast(aviso["texto"], icon=aviso.get("icono", "✅"))
+        st.session_state.notificacion_pendiente = None
+
     render_encabezado()
     render_progreso_movil()
-    habilitar_estabilidad_viewport_movil()
     render_cliente()
     panel_transition = str(
         st.session_state.get("mobile_panel_transition") or "steady"
@@ -4820,6 +5717,15 @@ if ES_MOVIL:
             render_catalogo_movil_fragmento()
     st.session_state.mobile_panel_transition = ""
     render_navegacion_movil()
+    restaurar_estabilidad_viewport_movil()
+    guardar_borrador_en_navegador("rv_borrador_local_mobile_fragment_v1")
+
+
+if ES_MOVIL:
+    # Catálogo, carrito y navegación forman una sola superficie reactiva.
+    # Agregar un producto ya no reconstruye la página ni altera el scroll.
+    habilitar_estabilidad_viewport_movil()
+    render_experiencia_movil_fragmento()
 else:
     # En escritorio se usa una interfaz totalmente distinta, basada en el
     # diseño clásico proporcionado por el usuario. No se renderiza el catálogo
