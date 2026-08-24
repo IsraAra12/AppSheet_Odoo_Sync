@@ -4,6 +4,7 @@ import hashlib
 import html
 import json
 import logging
+import math
 import os
 import time
 import unicodedata
@@ -43,7 +44,7 @@ CONFIRMAR_AUTOMATICAMENTE = False
 PRODUCTOS_POR_PAGINA = 6
 COLUMNAS_CATALOGO = 3
 PROMOCIONES_RAPIDAS = ("1+1", "2+1", "2+2", "4+1", "10+2", "11+1", "Otra")
-ODOO_TIMEOUT_SEGUNDOS = 15.0
+ODOO_TIMEOUT_SEGUNDOS = 30.0
 
 logger = logging.getLogger("rapyvet.pedidos")
 
@@ -85,6 +86,7 @@ def inicializar_estado() -> None:
         "enviar_pedido": False,
         "confirmar_envio": False,
         "envio_en_progreso": False,
+        "error_envio_pedido": None,
         "pedido_token": f"RV-{uuid.uuid4().hex}",
         "nuevo_cliente_pendiente": False,
         "nuevo_cliente_version": 0,
@@ -2912,55 +2914,129 @@ def crear_pedido_odoo(
         "amount_total",
     ]
 
+    def resultado_desde_registro(
+        registro: dict[str, Any],
+    ) -> tuple[int, str, str, float, float, float]:
+        sale_order_id = int(registro["id"])
+        return (
+            sale_order_id,
+            str(registro.get("name") or sale_order_id),
+            (
+                "Pedido recuperado"
+                if str(registro.get("state") or "") in {"sale", "done"}
+                else "Cotización recuperada"
+            ),
+            float(registro.get("amount_untaxed") or 0.0),
+            float(registro.get("amount_tax") or 0.0),
+            float(registro.get("amount_total") or 0.0),
+        )
+
+    def buscar_existente(proxy: Any) -> dict[str, Any] | None:
+        registros = proxy.execute_kw(
+            DB,
+            uid,
+            PASSWORD,
+            "sale.order",
+            "search_read",
+            [[("client_order_ref", "=", token)]],
+            {
+                "fields": campos_resultado,
+                "limit": 1,
+                "order": "id desc",
+            },
+        )
+        return registros[0] if registros else None
+
     # La misma referencia se conserva después de un timeout. Antes de crear se
     # busca una orden previa para que reintentar recupere el resultado en lugar
     # de duplicar el pedido.
-    existentes = models.execute_kw(
-        DB,
-        uid,
-        PASSWORD,
-        "sale.order",
-        "search_read",
-        [[("client_order_ref", "=", token)]],
-        {
-            "fields": campos_resultado,
-            "limit": 1,
-            "order": "id desc",
-        },
-    )
-
-    if existentes:
-        registro_existente = existentes[0]
-        sale_order_id = int(registro_existente["id"])
+    registro_existente = buscar_existente(models)
+    if registro_existente:
         logger.warning(
             "Pedido recuperado por referencia idempotente %s (Odoo id=%s)",
             token,
-            sale_order_id,
+            registro_existente["id"],
         )
-        return (
-            sale_order_id,
-            str(registro_existente.get("name") or sale_order_id),
-            (
-                "Pedido recuperado"
-                if str(registro_existente.get("state") or "") in {"sale", "done"}
-                else "Cotización recuperada"
-            ),
-            float(registro_existente.get("amount_untaxed") or 0.0),
-            float(registro_existente.get("amount_tax") or 0.0),
-            float(registro_existente.get("amount_total") or 0.0),
+        return resultado_desde_registro(registro_existente)
+
+    if not carrito:
+        raise ValueError("El pedido no contiene productos.")
+
+    lineas_validadas: list[tuple[int, int, float]] = []
+    for posicion, linea in enumerate(carrito, start=1):
+        try:
+            producto_id = int(linea["product_id"])
+            cantidad = int(linea["cantidad"])
+            precio = float(linea["precio_unitario"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"La línea {posicion} tiene datos incompletos o inválidos."
+            ) from error
+
+        if producto_id <= 0:
+            raise ValueError(f"La línea {posicion} no tiene un producto válido.")
+        if cantidad <= 0:
+            raise ValueError(f"La línea {posicion} debe tener al menos una unidad.")
+        if not math.isfinite(precio) or precio < 0:
+            raise ValueError(f"La línea {posicion} tiene un precio inválido.")
+
+        lineas_validadas.append((producto_id, cantidad, precio))
+
+    cliente_disponible = models.execute_kw(
+        DB,
+        uid,
+        PASSWORD,
+        "res.partner",
+        "search_count",
+        [[("id", "=", int(cliente_id)), ("active", "=", True)]],
+    )
+    if not cliente_disponible:
+        raise ValueError(
+            "El cliente ya no está disponible en Odoo. Actualiza la lista y "
+            "selecciónalo nuevamente."
         )
 
+    productos_ids = sorted({producto_id for producto_id, _, _ in lineas_validadas})
+    productos_disponibles = models.execute_kw(
+        DB,
+        uid,
+        PASSWORD,
+        "product.product",
+        "search_read",
+        [[
+            ("id", "in", productos_ids),
+            ("active", "=", True),
+            ("sale_ok", "=", True),
+        ]],
+        {"fields": ["id", "name"]},
+    )
+    nombres_productos = {
+        int(producto["id"]): str(producto.get("name") or "Producto")
+        for producto in productos_disponibles
+    }
+    faltantes = [
+        producto_id for producto_id in productos_ids if producto_id not in nombres_productos
+    ]
+    if faltantes:
+        raise ValueError(
+            "Uno o más productos fueron desactivados o ya no pueden venderse. "
+            "Actualiza el catálogo y vuelve a agregarlos."
+        )
+
+    # Odoo SaaS 19.3 marca `name` como obligatorio y retiró campos antiguos
+    # como `product_uom`. Enviamos únicamente el esquema vigente.
     lineas_odoo = [
         (
             0,
             0,
             {
-                "product_id": int(linea["product_id"]),
-                "product_uom_qty": int(linea["cantidad"]),
-                "price_unit": float(linea["precio_unitario"]),
+                "product_id": producto_id,
+                "name": nombres_productos[producto_id],
+                "product_uom_qty": cantidad,
+                "price_unit": precio,
             },
         )
-        for linea in carrito
+        for producto_id, cantidad, precio in lineas_validadas
     ]
 
     valores: dict[str, Any] = {
@@ -2973,14 +3049,41 @@ def crear_pedido_odoo(
     if nota.strip():
         valores["note"] = nota.strip()
 
-    sale_order_id = models.execute_kw(
-        DB,
-        uid,
-        PASSWORD,
-        "sale.order",
-        "create",
-        [valores],
-    )
+    try:
+        sale_order_id = models.execute_kw(
+            DB,
+            uid,
+            PASSWORD,
+            "sale.order",
+            "create",
+            [valores],
+        )
+    except (TimeoutError, OSError, xmlrpc.client.ProtocolError):
+        # Odoo puede confirmar la transacción aunque la respuesta se pierda.
+        # Recuperamos automáticamente por la referencia antes de mostrar error.
+        for intento in range(3):
+            if intento:
+                time.sleep(0.4 * intento)
+            try:
+                proxy_recuperacion = crear_proxy_odoo(
+                    URL,
+                    "/xmlrpc/2/object",
+                    timeout=ODOO_TIMEOUT_SEGUNDOS,
+                )
+                recuperado = buscar_existente(proxy_recuperacion)
+                if recuperado:
+                    logger.warning(
+                        "Pedido %s recuperado automáticamente tras pérdida de respuesta",
+                        token,
+                    )
+                    return resultado_desde_registro(recuperado)
+            except Exception:
+                logger.warning(
+                    "Intento %s sin respuesta al recuperar %s",
+                    intento + 1,
+                    token,
+                )
+        raise
     logger.info("Pedido creado con referencia %s (Odoo id=%s)", token, sale_order_id)
 
     estado = "Cotización creada"
@@ -3046,6 +3149,44 @@ def moneda(valor: float) -> str:
 
 def seguro(valor: Any) -> str:
     return html.escape(str(valor or ""))
+
+
+def detalle_fallo_odoo(error: Exception) -> str:
+    """Extrae una causa breve sin mostrar todo el traceback del servidor."""
+
+    texto = (
+        str(error.faultString)
+        if isinstance(error, xmlrpc.client.Fault)
+        else str(error)
+    )
+    lineas = [linea.strip() for linea in texto.splitlines() if linea.strip()]
+    return (lineas[-1] if lineas else texto).strip()[:500]
+
+
+def guardar_error_envio(
+    mensaje: str,
+    referencia: str,
+    detalle: str = "",
+) -> None:
+    st.session_state.error_envio_pedido = {
+        "mensaje": str(mensaje).strip(),
+        "referencia": str(referencia).strip(),
+        "detalle": str(detalle).strip()[:500],
+    }
+
+
+def render_error_envio_pendiente() -> None:
+    error = st.session_state.get("error_envio_pedido")
+    if not isinstance(error, dict):
+        return
+
+    with st.container(border=True, key="rv_order_error_card"):
+        st.error(str(error.get("mensaje") or "No se pudo enviar el pedido."))
+        if error.get("referencia"):
+            st.caption(f"Referencia segura: {error['referencia']}")
+        if error.get("detalle"):
+            with st.expander("Ver detalle para soporte"):
+                st.code(str(error["detalle"]))
 
 
 def normalizar(valor: Any) -> str:
@@ -3246,6 +3387,7 @@ def reiniciar_pedido() -> None:
     st.session_state.mobile_cliente_selector = None
     st.session_state.confirmar_envio = False
     st.session_state.envio_en_progreso = False
+    st.session_state.error_envio_pedido = None
     st.session_state.pedido_token = f"RV-{uuid.uuid4().hex}"
     limpiar_busqueda_catalogo()
     st.session_state.categoria_pos = "Todas"
@@ -3311,6 +3453,7 @@ def solicitar_envio() -> None:
 
     if st.session_state.get("envio_en_progreso", False):
         return
+    st.session_state.error_envio_pedido = None
     st.session_state.confirmar_envio = True
 
 
@@ -4728,6 +4871,8 @@ def render_desktop_clasico() -> None:
     cambia la presentación y el flujo de captura.
     """
 
+    render_error_envio_pendiente()
+
     lineas, unidades, gratis, total = totales_carrito()
     cliente_id_actual = st.session_state.get("cliente_id")
     cliente_nombre = "Sin seleccionar"
@@ -5737,6 +5882,7 @@ def render_experiencia_movil_fragmento() -> None:
         st.session_state.notificacion_pendiente = None
 
     render_encabezado()
+    render_error_envio_pendiente()
     render_progreso_movil()
     render_cliente()
     panel_transition = str(
@@ -5797,9 +5943,14 @@ if confirmacion_pendiente:
 
 if st.session_state.enviar_pedido:
     st.session_state.enviar_pedido = False
+    error_requiere_rerun = False
 
     if not st.session_state.cliente_id or not st.session_state.carrito:
-        st.error("Selecciona un cliente y agrega productos antes de enviar.")
+        guardar_error_envio(
+            "Selecciona un cliente y agrega productos antes de enviar.",
+            str(st.session_state.get("pedido_token") or ""),
+        )
+        error_requiere_rerun = True
     else:
         st.session_state.envio_en_progreso = True
         pedido_token = str(st.session_state.pedido_token)
@@ -5856,38 +6007,65 @@ if st.session_state.enviar_pedido:
                     "texto_whatsapp": texto_whatsapp,
                     "enlace_whatsapp": crear_enlace_whatsapp(texto_whatsapp),
                 }
+                st.session_state.error_envio_pedido = None
                 st.session_state.mostrar_balloons = True
                 st.session_state.borrador_local_eliminar = True
                 st.rerun()
 
+            except ValueError as error:
+                logger.warning("Pedido %s inválido: %s", pedido_token, error)
+                guardar_error_envio(str(error), pedido_token)
+                error_requiere_rerun = True
             except xmlrpc.client.Fault as error:
                 logger.exception("Odoo rechazó el pedido %s", pedido_token)
-                st.error("Odoo rechazó el pedido. Revisa los datos e inténtalo nuevamente.")
-                with st.expander("Ver detalle técnico"):
-                    st.code(error.faultString)
+                guardar_error_envio(
+                    "Odoo rechazó uno de los datos del pedido. Revisa el "
+                    "cliente y los productos antes de reintentar.",
+                    pedido_token,
+                    detalle_fallo_odoo(error),
+                )
+                error_requiere_rerun = True
             except xmlrpc.client.ProtocolError as error:
                 logger.exception("Error HTTP al enviar %s", pedido_token)
-                st.error(
-                    "No se recibió una respuesta válida de Odoo. Puedes volver a "
-                    f"intentarlo sin duplicar el pedido. Referencia: {pedido_token}"
+                guardar_error_envio(
+                    "Odoo no devolvió una respuesta válida. Puedes reintentar "
+                    "el mismo pedido sin riesgo de duplicarlo.",
+                    pedido_token,
+                    f"HTTP {error.errcode}",
                 )
-                st.caption(f"Código HTTP: {error.errcode}")
+                error_requiere_rerun = True
             except TimeoutError:
                 logger.exception("Timeout al enviar %s", pedido_token)
-                st.error(
-                    "Odoo tardó más de 15 segundos. Puedes reintentar: la app "
-                    "buscará primero la misma referencia para evitar duplicados. "
-                    f"Referencia: {pedido_token}"
+                guardar_error_envio(
+                    "Odoo tardó demasiado y no fue posible confirmar la "
+                    "respuesta. Reintenta el mismo pedido; la app verificará "
+                    "primero que no exista.",
+                    pedido_token,
                 )
+                error_requiere_rerun = True
+            except OSError as error:
+                logger.exception("Conexión interrumpida al enviar %s", pedido_token)
+                guardar_error_envio(
+                    "La conexión con Odoo se interrumpió. Reintenta el mismo "
+                    "pedido; la referencia evita que se duplique.",
+                    pedido_token,
+                    detalle_fallo_odoo(error),
+                )
+                error_requiere_rerun = True
             except Exception as error:
                 logger.exception("Error inesperado al enviar %s", pedido_token)
-                st.error(
-                    f"No se pudo completar el pedido. Referencia: {pedido_token}"
+                guardar_error_envio(
+                    "No se pudo completar el pedido. Conservamos la referencia "
+                    "para que soporte pueda revisarlo sin duplicar la orden.",
+                    pedido_token,
+                    detalle_fallo_odoo(error),
                 )
-                with st.expander("Ver detalle técnico"):
-                    st.code(str(error))
+                error_requiere_rerun = True
             finally:
                 st.session_state.envio_en_progreso = False
+
+    if error_requiere_rerun:
+        st.rerun()
 
 
 # Segunda escritura del ciclo. Captura cambios realizados durante el render,
