@@ -1,0 +1,83 @@
+import type { Catalog, Client, OrderResult } from "@/lib/types";
+
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/$/, "");
+const TOKEN_KEY = "rapyvet_session_v2";
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+export function hasSession() {
+  return typeof window !== "undefined" && Boolean(localStorage.getItem(TOKEN_KEY));
+}
+
+export function clearSession() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+async function request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set("Content-Type", "application/json");
+  if (authenticated) {
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, { ...init, headers });
+  } catch {
+    throw new ApiError("No hay conexión con el servidor. Revisa tu señal e intenta otra vez.", 0);
+  }
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401 && authenticated) clearSession();
+    const detail = typeof body.detail === "string" ? body.detail : "No fue posible completar la operación.";
+    throw new ApiError(detail, response.status);
+  }
+  return body as T;
+}
+
+export async function login(pin: string) {
+  const result = await request<{ token: string }>(
+    "/api/session",
+    { method: "POST", body: JSON.stringify({ pin }) },
+    false,
+  );
+  localStorage.setItem(TOKEN_KEY, result.token);
+}
+
+export function getCatalog(refresh = false) {
+  return request<Catalog>(`/api/catalog${refresh ? "?refresh=true" : ""}`);
+}
+
+export function createClient(data: {
+  name: string;
+  email: string;
+  street: string;
+  postal_code: string;
+  vat: string;
+}) {
+  return request<Client & { created: boolean }>("/api/clients", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function createOrder(data: {
+  customer_id: number;
+  lines: { product_id: number; quantity: number; unit_price: number }[];
+  note: string;
+  idempotency_key: string;
+}) {
+  return request<OrderResult>("/api/orders", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}

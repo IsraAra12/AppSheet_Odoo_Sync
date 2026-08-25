@@ -2,6 +2,16 @@
 
 Aplicación interna para capturar pedidos desde teléfono, tableta o computadora y registrarlos directamente en Odoo.
 
+## Nueva versión PWA en transición
+
+El proyecto ya incorpora la nueva arquitectura acordada:
+
+- `frontend/`: Next.js PWA con Motion, preparada para Cloudflare Pages.
+- `backend/`: FastAPI, preparada para Google Cloud Run y conectada con Odoo.
+- `app.py`: versión Streamlit que permanece activa como respaldo durante la migración.
+
+La guía de publicación y el plan de cambio están en [MIGRACION_PWA.md](MIGRACION_PWA.md).
+
 La aplicación utiliza dos interfaces independientes:
 
 - **Móvil:** catálogo y carrito en pantallas separadas, con barra inferior fija.
@@ -167,6 +177,19 @@ WhatsApp normal requiere que el vendedor seleccione el grupo y confirme el enví
 ```text
 rapyvet-pedidos/
 ├── app.py
+├── backend/
+│   ├── main.py
+│   ├── odoo_service.py
+│   └── requirements.txt
+├── frontend/
+│   ├── app/
+│   ├── components/
+│   ├── public/
+│   └── package.json
+├── rapyvet/
+├── tests/
+├── Dockerfile
+├── MIGRACION_PWA.md
 ├── requirements.txt
 ├── README.md
 ├── .gitignore

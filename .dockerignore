@@ -1,0 +1,11 @@
+.git
+.venv
+.vs
+.streamlit
+frontend/node_modules
+frontend/.next
+frontend/out
+artifacts
+tests
+*.pyc
+__pycache__
