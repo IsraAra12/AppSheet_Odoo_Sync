@@ -3008,14 +3008,15 @@ def crear_pedido_odoo(
             ("active", "=", True),
             ("sale_ok", "=", True),
         ]],
-        {"fields": ["id", "name"]},
+        {"fields": ["id"]},
     )
-    nombres_productos = {
-        int(producto["id"]): str(producto.get("name") or "Producto")
-        for producto in productos_disponibles
+    productos_disponibles_ids = {
+        int(producto["id"]) for producto in productos_disponibles
     }
     faltantes = [
-        producto_id for producto_id in productos_ids if producto_id not in nombres_productos
+        producto_id
+        for producto_id in productos_ids
+        if producto_id not in productos_disponibles_ids
     ]
     if faltantes:
         raise ValueError(
@@ -3023,15 +3024,15 @@ def crear_pedido_odoo(
             "Actualiza el catálogo y vuelve a agregarlos."
         )
 
-    # Odoo SaaS 19.3 marca `name` como obligatorio y retiró campos antiguos
-    # como `product_uom`. Enviamos únicamente el esquema vigente.
+    # Odoo calcula la descripción, unidad e impuestos mediante el cambio de
+    # producto. No enviamos `name`: sobrescribirlo duplica la descripción al
+    # facturar en Odoo SaaS 19.3.
     lineas_odoo = [
         (
             0,
             0,
             {
                 "product_id": producto_id,
-                "name": nombres_productos[producto_id],
                 "product_uom_qty": cantidad,
                 "price_unit": precio,
             },

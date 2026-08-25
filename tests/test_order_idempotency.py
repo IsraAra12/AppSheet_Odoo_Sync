@@ -38,7 +38,7 @@ class ProxyFalso:
         if modelo == "res.partner" and metodo == "search_count":
             return 1
         if modelo == "product.product" and metodo == "search_read":
-            return [{"id": 5, "name": "Producto de prueba"}]
+            return [{"id": 5}]
         if modelo == "sale.order" and metodo == "create":
             return 99
         if modelo == "sale.order" and metodo == "read":
@@ -129,7 +129,7 @@ class IdempotenciaPedidoTests(unittest.TestCase):
         self.assertIn("RV-abcdef", valores["origin"])
         self.assertEqual(valores["partner_id"], 10)
         valores_linea = valores["order_line"][0][2]
-        self.assertEqual(valores_linea["name"], "Producto de prueba")
+        self.assertNotIn("name", valores_linea)
         self.assertEqual(valores_linea["product_uom_qty"], 2)
         self.assertNotIn("product_uom", valores_linea)
         self.assertNotIn("tax_id", valores_linea)
