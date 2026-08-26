@@ -1,31 +1,55 @@
 "use client";
 
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   BadgeCheck,
+  Calendar,
   Check,
   ChevronRight,
   CircleAlert,
+  CircleCheck,
   CirclePlus,
   ClipboardCheck,
+  Clock,
+  Copy,
+  FileText,
+  History,
   Home,
+  Inbox,
+  KeyRound,
+  ListOrdered,
   LoaderCircle,
+  LockKeyhole,
   LogOut,
   Minus,
   PackageSearch,
+
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
+  Send,
+  ShieldCheck,
   ShoppingBag,
   Sparkles,
   Trash2,
   UserRound,
   UserRoundPlus,
+  UsersRound,
   WifiOff,
   X,
 } from "lucide-react";
-import { AnimatePresence, MotionConfig, motion, useReducedMotion } from "motion/react";
+import {
+  AnimatePresence,
+  MotionConfig,
+  motion,
+  useMotionTemplate,
+  useMotionValue,
+  useReducedMotion,
+  useSpring,
+} from "motion/react";
 import {
   FormEvent,
   useDeferredValue,
@@ -39,22 +63,50 @@ import {
 import { ServiceWorker } from "@/components/service-worker";
 import {
   ApiError,
+  changePassword,
   clearSession,
   createClient,
   createOrder,
+  generateTemporarySellerKeys,
   getCatalog,
+  getOrderHistory,
+  getStoredSession,
   hasSession,
   login,
 } from "@/lib/api";
-import type { CartLine, Catalog, Client, Draft, OrderResult, Product } from "@/lib/types";
+import {
+  clearConfirmedOutbox,
+  enqueueOrder,
+  getOutbox,
+  getPendingOutboxCount,
+  removeOutboxItem,
+  subscribeOutbox,
+  syncAllPendingOutbox,
+  syncOutboxItem,
+  updateOutboxStatus,
+} from "@/lib/outbox";
+import type {
+  CartLine,
+  Catalog,
+  Client,
+  Draft,
+  OrderResult,
+  OutboxItem,
+  Product,
+  Seller,
+  SellerOrderSummary,
+  SessionInfo,
+  TemporarySellerKey,
+} from "@/lib/types";
 
-type Screen = "home" | "clients" | "products" | "cart" | "review" | "success";
+type Screen = "home" | "clients" | "products" | "cart" | "review" | "success" | "history" | "outbox";
 
 const DRAFT_KEY = "rapyvet_order_draft_v2";
 const CATALOG_KEY = "rapyvet_catalog_v2";
 const VISIBLE_STEP = 30;
 
 const pageMotion = {
+
   initial: { opacity: 0, x: 12 },
   animate: { opacity: 1, x: 0 },
   exit: { opacity: 0, x: -8 },
@@ -84,6 +136,54 @@ function uniqueId() {
 
 function freshOrderKey() {
   return `RV-${uniqueId()}`.slice(0, 39);
+}
+
+function productInitials(product: Product) {
+  return product.name
+    .split(/[\s/-]+/)
+    .filter((part) => Boolean(part) && /[a-záéíóúñ]/i.test(part))
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
+}
+
+function firstName(name = "") {
+  return name.trim().split(/\s+/)[0] || "equipo";
+}
+
+function DesktopPointerField() {
+  const rawX = useMotionValue(-600);
+  const rawY = useMotionValue(-600);
+  const x = useSpring(rawX, { stiffness: 95, damping: 24, mass: 0.35 });
+  const y = useSpring(rawY, { stiffness: 95, damping: 24, mass: 0.35 });
+  const glow = useMotionTemplate`radial-gradient(520px circle at ${x}px ${y}px, rgba(253, 170, 249, 0.17), rgba(139, 69, 139, 0.08) 32%, transparent 72%)`;
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      rawX.set(event.clientX);
+      rawY.set(event.clientY);
+    };
+    const handlePointerLeave = () => {
+      rawX.set(-600);
+      rawY.set(-600);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: true });
+    window.addEventListener("pointerleave", handlePointerLeave);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerleave", handlePointerLeave);
+    };
+  }, [rawX, rawY]);
+
+  return (
+    <motion.div className="desktop-pointer-field" style={{ background: glow }} aria-hidden="true">
+      {Array.from({ length: 12 }).map((_, index) => (
+        <span key={index} />
+      ))}
+    </motion.div>
+  );
 }
 
 function Logo({ compact = false }: { compact?: boolean }) {
@@ -126,10 +226,12 @@ function EmptyState({ icon: Icon, title, body }: { icon: typeof Search; title: s
   );
 }
 
-function LoginScreen({ onReady }: { onReady: () => void }) {
-  const [pin, setPin] = useState("");
+function LoginScreen({ onReady }: { onReady: (session: SessionInfo, password: string) => void }) {
+  const [loginName, setLoginName] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [adminOpen, setAdminOpen] = useState(false);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -137,8 +239,8 @@ function LoginScreen({ onReady }: { onReady: () => void }) {
     setBusy(true);
     setError("");
     try {
-      await login(pin);
-      onReady();
+      const session = await login(loginName, password);
+      onReady(session, password);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "No fue posible ingresar.");
     } finally {
@@ -157,19 +259,33 @@ function LoginScreen({ onReady }: { onReady: () => void }) {
         <Logo />
         <div className="login-intro">
           <span className="eyebrow">Ventas en campo</span>
-          <h1>Tu ruta de pedidos, más rápida.</h1>
-          <p>Consulta clientes, arma el carrito y registra el pedido directamente en Odoo.</p>
+          <h1>Acceso con ID de Odoo</h1>
+          <p>Ingresa tu ID, correo o usuario de Odoo y tu NIP temporal o personal.</p>
         </div>
+
         <form onSubmit={submit} className="stack-form">
-          <label htmlFor="access-pin">Código de acceso</label>
+          <label htmlFor="seller-login">Vendedor de Odoo</label>
           <input
-            id="access-pin"
+            id="seller-login"
+            type="text"
+            autoComplete="username"
+            value={loginName}
+            onChange={(event) => setLoginName(event.target.value)}
+            placeholder="ID, correo o usuario"
+            minLength={1}
+            required
+          />
+          <label htmlFor="seller-password">NIP de 4 dígitos</label>
+          <input
+            id="seller-password"
             type="password"
             inputMode="numeric"
+            pattern="[0-9]{4}"
+            maxLength={4}
             autoComplete="current-password"
-            value={pin}
-            onChange={(event) => setPin(event.target.value)}
-            placeholder="••••••"
+            value={password}
+            onChange={(event) => setPassword(event.target.value.replace(/\D/g, "").slice(0, 4))}
+            placeholder="4 dígitos"
             minLength={4}
             required
           />
@@ -185,30 +301,352 @@ function LoginScreen({ onReady }: { onReady: () => void }) {
               </motion.p>
             )}
           </AnimatePresence>
-          <button className="button primary wide" disabled={busy}>
+          <button className="button primary wide" disabled={busy || password.length !== 4}>
             {busy ? <LoaderCircle className="spin" /> : <ArrowRight />}
             {busy ? "Ingresando…" : "Entrar a pedidos"}
           </button>
         </form>
-        <p className="secure-note"><BadgeCheck size={16} /> Conexión protegida · Tus claves de Odoo no se guardan aquí</p>
+        <button type="button" className="admin-link" onClick={() => setAdminOpen(true)}>
+          <ShieldCheck size={16} /> Consultar claves temporales
+        </button>
+        <p className="secure-note"><BadgeCheck size={16} /> Conexión protegida · La clave maestra de Odoo no se expone</p>
+      </motion.section>
+      <AdminKeysDialog open={adminOpen} onClose={() => setAdminOpen(false)} />
+    </main>
+  );
+}
+
+function ChangePasswordScreen({
+  session,
+  currentPassword,
+  onReady,
+  onLogout,
+}: {
+  session: SessionInfo;
+  currentPassword: string;
+  onReady: (session: SessionInfo) => void;
+  onLogout: () => void;
+}) {
+  const [current, setCurrent] = useState(currentPassword);
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    if (next.length !== 4 || !/^\d{4}$/.test(next)) {
+      setError("El nuevo NIP debe tener exactamente 4 dígitos numéricos.");
+      return;
+    }
+    if (next === current) {
+      setError("El nuevo NIP debe ser diferente al NIP temporal.");
+      return;
+    }
+    if (next !== confirm) {
+      setError("La confirmación no coincide con el nuevo NIP.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await changePassword(current, next);
+      onReady(updated);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No fue posible cambiar el NIP.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="login-shell">
+      <motion.section
+        className="login-card"
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ type: "spring", stiffness: 260, damping: 26 }}
+      >
+        <Logo />
+        <div className="seller-welcome">
+          <span className="seller-avatar"><KeyRound /></span>
+          <div>
+            <small>Primer ingreso · ID {session.seller.id}</small>
+            <strong>{session.seller.name}</strong>
+          </div>
+        </div>
+        <div className="login-intro compact">
+          <span className="eyebrow">Primer acceso</span>
+          <h1>Define tu nuevo NIP de 4 dígitos.</h1>
+          <p>Para mayor seguridad, crea un NIP personal de 4 números que recordarás fácilmente.</p>
+        </div>
+        <form onSubmit={submit} className="stack-form">
+          <label htmlFor="current-password">NIP temporal actual</label>
+          <input
+            id="current-password"
+            type="password"
+            inputMode="numeric"
+            maxLength={4}
+            autoComplete="current-password"
+            value={current}
+            onChange={(event) => setCurrent(event.target.value.replace(/\D/g, "").slice(0, 4))}
+            minLength={4}
+            required
+          />
+          <label htmlFor="new-password">Nuevo NIP personal (4 dígitos)</label>
+          <input
+            id="new-password"
+            type="password"
+            inputMode="numeric"
+            maxLength={4}
+            pattern="[0-9]{4}"
+            autoComplete="new-password"
+            value={next}
+            onChange={(event) => setNext(event.target.value.replace(/\D/g, "").slice(0, 4))}
+            placeholder="Ej. 1234"
+            minLength={4}
+            required
+          />
+          <label htmlFor="confirm-password">Confirmar nuevo NIP</label>
+          <input
+            id="confirm-password"
+            type="password"
+            inputMode="numeric"
+            maxLength={4}
+            pattern="[0-9]{4}"
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(event) => setConfirm(event.target.value.replace(/\D/g, "").slice(0, 4))}
+            placeholder="Repite tu nuevo NIP"
+            minLength={4}
+            required
+          />
+          <AnimatePresence initial={false}>
+            {error && (
+              <motion.p
+                className="form-error"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+              >
+                <CircleAlert size={16} /> {error}
+              </motion.p>
+            )}
+          </AnimatePresence>
+          <button className="button primary wide" disabled={busy || next.length !== 4}>
+            {busy ? <LoaderCircle className="spin" /> : <LockKeyhole />}
+            {busy ? "Guardando NIP…" : "Guardar nuevo NIP"}
+          </button>
+          <button type="button" className="button secondary wide" onClick={onLogout} disabled={busy}>
+            <LogOut /> Salir
+          </button>
+        </form>
       </motion.section>
     </main>
   );
 }
 
+
+function AdminKeysDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [adminPin, setAdminPin] = useState("");
+  const [resetExisting, setResetExisting] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [keys, setKeys] = useState<TemporarySellerKey[]>([]);
+  const [copied, setCopied] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setAdminPin("");
+      setResetExisting(false);
+      setError("");
+      setKeys([]);
+      setCopied("");
+    }
+  }, [open]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setCopied("");
+    try {
+      const result = await generateTemporarySellerKeys(adminPin, resetExisting);
+      setKeys(result.sellers);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No fue posible generar las claves.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyKey(key: TemporarySellerKey) {
+    if (!key.temporary_password) return;
+    const text = `${key.seller.name}\nID de Odoo: ${key.seller.id}\nNIP temporal: ${key.temporary_password}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(String(key.seller.id));
+    } catch {
+      setCopied("");
+    }
+  }
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="dialog-backdrop"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !busy) onClose();
+          }}
+        >
+          <motion.section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="seller-keys-title"
+            className="dialog-sheet admin-dialog"
+            initial={{ opacity: 0, y: 32 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 32 }}
+            transition={{ type: "spring", stiffness: 300, damping: 30 }}
+          >
+            <div className="dialog-head">
+              <div>
+                <span className="eyebrow">Administración</span>
+                <h2 id="seller-keys-title">Claves y NIPs de vendedores</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={onClose}
+                disabled={busy}
+                aria-label="Cerrar"
+              >
+                <X />
+              </button>
+            </div>
+            <form className="dialog-form" onSubmit={submit}>
+              <label>
+                <span>Clave de administrador</span>
+                <input
+                  type="password"
+                  minLength={6}
+                  value={adminPin}
+                  onChange={(event) => setAdminPin(event.target.value)}
+                  required
+                />
+              </label>
+              <label className="toggle-row">
+                <input
+                  type="checkbox"
+                  checked={resetExisting}
+                  onChange={(event) => setResetExisting(event.target.checked)}
+                />
+                <span>Restablecer también vendedores que ya tienen NIP personal</span>
+              </label>
+              {error && (
+                <p className="form-error">
+                  <CircleAlert size={16} /> {error}
+                </p>
+              )}
+              <button className="button primary wide" disabled={busy}>
+                {busy ? <LoaderCircle className="spin" /> : <UsersRound />}
+                {busy ? "Consultando Odoo…" : "Ver claves temporales"}
+              </button>
+            </form>
+            {keys.length > 0 && (
+              <div className="seller-key-list">
+                {keys.map((key) => (
+                  <article className="seller-key-row" key={key.seller.id}>
+                    <span className="seller-avatar">
+                      <UserRound />
+                    </span>
+                    <div>
+                      <strong>
+                        ID {key.seller.id} · {key.seller.name}
+                      </strong>
+                      <small>{key.seller.login}</small>
+                      <em>{key.status}</em>
+                    </div>
+                    {key.temporary_password ? (
+                      <button
+                        type="button"
+                        className="copy-key-button"
+                        onClick={() => void copyKey(key)}
+                      >
+                        <Copy size={16} />
+                        <span>
+                          {copied === String(key.seller.id)
+                            ? "Copiado"
+                            : `NIP: ${key.temporary_password}`}
+                        </span>
+                      </button>
+                    ) : (
+                      <span className="key-ready">NIP Activo</span>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
+          </motion.section>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+
 function TopBar({
   customer,
+  seller,
+  pendingCount = 0,
   onCustomer,
+  onHistory,
+  onOutbox,
   onLogout,
 }: {
   customer?: Client;
+  seller?: Seller;
+  pendingCount?: number;
   onCustomer: () => void;
+  onHistory: () => void;
+  onOutbox: () => void;
   onLogout: () => void;
 }) {
   return (
     <header className="topbar">
       <Logo />
       <div className="topbar-actions">
+        {seller && (
+          <span className="seller-chip" title={seller.login}>
+            <UserRound size={16} />
+            <span>{seller.name}</span>
+          </span>
+        )}
+        <button
+          type="button"
+          className="icon-button outbox-top-button"
+          onClick={onOutbox}
+          aria-label="Bandeja de pedidos"
+          title="Bandeja de pedidos offline"
+        >
+          <Inbox size={19} />
+          {pendingCount > 0 && <span className="topbar-badge">{pendingCount}</span>}
+        </button>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={onHistory}
+          aria-label="Historial de pedidos"
+          title="Historial de pedidos en Odoo"
+        >
+          <History size={19} />
+        </button>
         <button type="button" className="customer-chip" onClick={onCustomer}>
           <UserRound size={17} />
           <span>{customer?.name || "Elegir cliente"}</span>
@@ -224,26 +662,37 @@ function TopBar({
 
 function HomeScreen({
   customer,
+  seller,
   cart,
+  pendingCount = 0,
   onStart,
   onProducts,
   onCart,
+  onHistory,
+  onOutbox,
 }: {
   customer?: Client;
+  seller?: Seller;
   cart: CartLine[];
+  pendingCount?: number;
   onStart: () => void;
   onProducts: () => void;
   onCart: () => void;
+  onHistory: () => void;
+  onOutbox: () => void;
 }) {
   const units = cart.reduce((sum, line) => sum + line.quantity, 0);
   const total = cart.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
   return (
     <div className="screen home-screen">
-      <section className="hero-panel">
+      <section className="hero-panel dashboard-hero">
         <div>
-          <span className="eyebrow">RapyVet · Ventas</span>
-          <h1>Pedidos sin pausas, estés donde estés.</h1>
-          <p>Un flujo claro para dedicar menos tiempo a capturar y más tiempo a vender.</p>
+          <div className="hero-status-row">
+            <span className="eyebrow">Resumen de hoy</span>
+            <span className="sync-pill">Sincronizado</span>
+          </div>
+          <h1>Hola, {firstName(seller?.name)}.</h1>
+          <p>Captura pedidos, revisa pendientes y consulta tu historial sin perder ritmo en campo.</p>
         </div>
         <motion.button
           type="button"
@@ -269,6 +718,18 @@ function HomeScreen({
           <strong>{units ? `${units} unidades` : "Carrito vacío"}</strong>
           <span className="text-link">{cart.length ? money(total) : "Agregar productos"} <ChevronRight size={15} /></span>
         </button>
+        <button type="button" className="summary-card" onClick={onOutbox}>
+          <span className="summary-icon"><Inbox /></span>
+          <small>Bandeja de salida</small>
+          <strong>{pendingCount > 0 ? `${pendingCount} pendientes` : "Al día"}</strong>
+          <span className="text-link">{pendingCount > 0 ? "Sincronizar ahora" : "Ver cola"} <ChevronRight size={15} /></span>
+        </button>
+        <button type="button" className="summary-card" onClick={onHistory}>
+          <span className="summary-icon"><History /></span>
+          <small>Historial Odoo</small>
+          <strong>Mis pedidos</strong>
+          <span className="text-link">Consultar folios <ChevronRight size={15} /></span>
+        </button>
       </section>
 
       <section className="flow-card">
@@ -287,6 +748,7 @@ function HomeScreen({
     </div>
   );
 }
+
 
 function ClientScreen({
   clients,
@@ -359,21 +821,18 @@ function ProductScreen({
   cart,
   onAdd,
   onPromo,
+  onCart,
 }: {
   products: Product[];
   cart: CartLine[];
   onAdd: (product: Product) => void;
   onPromo: (product: Product) => void;
+  onCart: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("Todos");
   const [visible, setVisible] = useState(VISIBLE_STEP);
   const deferredQuery = useDeferredValue(query);
   const inputRef = useRef<HTMLInputElement>(null);
-  const categories = useMemo(
-    () => ["Todos", ...Array.from(new Set(products.map((item) => item.category))).sort()],
-    [products],
-  );
   const quantities = useMemo(() => {
     const result = new Map<number, number>();
     for (const line of cart) result.set(line.productId, (result.get(line.productId) || 0) + line.quantity);
@@ -381,18 +840,20 @@ function ProductScreen({
   }, [cart]);
   const filtered = useMemo(() => {
     const needle = normalize(deferredQuery);
-    return products.filter((product) => {
-      const inCategory = category === "Todos" || product.category === category;
-      return inCategory && (!needle || normalize(`${product.code} ${product.name}`).includes(needle));
-    });
-  }, [products, deferredQuery, category]);
+    if (!needle) return products;
+    return products.filter((product) =>
+      normalize(`${product.code} ${product.name} ${product.category}`).includes(needle),
+    );
+  }, [products, deferredQuery]);
+  const cartCount = cart.reduce((sum, line) => sum + line.quantity, 0);
+  const cartTotal = cart.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
 
-  useEffect(() => setVisible(VISIBLE_STEP), [deferredQuery, category]);
+  useEffect(() => setVisible(VISIBLE_STEP), [deferredQuery]);
 
   return (
     <div className="screen product-screen">
       <div className="screen-title-row">
-        <div><span className="eyebrow">Paso 2 de 3</span><h1>Arma el pedido</h1><p>Busca por nombre o código y agrega sin perder tu posición.</p></div>
+        <div><span className="eyebrow">Catálogo Odoo</span><h1>Inventario disponible</h1><p>Busca por nombre o código y agrega sin perder tu posición.</p></div>
       </div>
       <div className="sticky-tools catalog-tools">
         <label className={`search-field ${deferredQuery !== query ? "searching" : ""}`}>
@@ -408,12 +869,8 @@ function ProductScreen({
           />
           {query && <button type="button" onClick={() => { setQuery(""); inputRef.current?.focus(); }} aria-label="Limpiar búsqueda"><X size={18} /></button>}
         </label>
-        <div className="category-strip" aria-label="Categorías">
-          {categories.map((item) => (
-            <button type="button" key={item} className={category === item ? "active" : ""} onClick={() => setCategory(item)}>{item}</button>
-          ))}
-        </div>
       </div>
+
       <div className="catalog-results">
         <div className="result-meta"><span>{filtered.length} productos</span>{deferredQuery && <span>Resultados para “{deferredQuery}”</span>}</div>
         <motion.div className="product-grid" layout>
@@ -421,7 +878,7 @@ function ProductScreen({
             {filtered.slice(0, visible).map((product) => (
               <motion.article
                 layout="position"
-                className="product-card"
+                className={`product-card ${quantities.has(product.id) ? "in-cart" : ""}`}
                 key={product.id}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -429,23 +886,73 @@ function ProductScreen({
                 transition={{ duration: 0.16 }}
               >
                 <div className="product-card-top">
-                  <span className="product-code">{product.code}</span>
-                  {quantities.has(product.id) && <motion.span className="quantity-badge" initial={{ scale: 0.7 }} animate={{ scale: 1 }}>{quantities.get(product.id)} en carrito</motion.span>}
+                  <span className="product-category">{product.category}</span>
+                  <span className="product-code">SKU: {product.code}</span>
                 </div>
                 <h2>{product.name}</h2>
-                <p>{product.category}</p>
-                <div className="product-price"><strong>{money(product.price)}</strong><small>Precio de lista</small></div>
+                <div className="product-price-row">
+                  <div className="product-price">
+                    <strong>{money(product.price)}</strong>
+                    <small>Precio de lista</small>
+                  </div>
+                  {quantities.has(product.id) && (
+                    <motion.span
+                      className="quantity-badge-card"
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                    >
+                      {quantities.get(product.id)} en pedido
+                    </motion.span>
+                  )}
+                </div>
                 <div className="product-actions">
-                  <motion.button type="button" className="button primary" onClick={() => onAdd(product)} whileTap={{ scale: 0.96 }}><Plus /> Agregar</motion.button>
-                  <motion.button type="button" className="icon-button promo" onClick={() => onPromo(product)} whileTap={{ scale: 0.94 }} aria-label={`Agregar promoción de ${product.name}`}><Sparkles /></motion.button>
+                  <motion.button
+                    type="button"
+                    className="button primary compact-add"
+                    onClick={() => onAdd(product)}
+                    whileTap={{ scale: 0.96 }}
+                  >
+                    <Plus size={18} /> Agregar
+                  </motion.button>
+                  <motion.button
+                    type="button"
+                    className="icon-button promo"
+                    onClick={() => onPromo(product)}
+                    whileTap={{ scale: 0.94 }}
+                    aria-label={`Agregar promoción de ${product.name}`}
+                    title="Agregar promoción"
+                  >
+                    <Sparkles size={18} />
+                  </motion.button>
                 </div>
               </motion.article>
             ))}
           </AnimatePresence>
         </motion.div>
+
         {!filtered.length && <EmptyState icon={PackageSearch} title="No encontramos productos" body="Revisa el nombre, el código o cambia la categoría." />}
         {visible < filtered.length && <button type="button" className="button secondary load-more" onClick={() => setVisible((count) => count + VISIBLE_STEP)}>Mostrar más productos</button>}
       </div>
+      <AnimatePresence>
+        {cartCount > 0 && (
+          <motion.button
+            type="button"
+            className="floating-order-card"
+            onClick={onCart}
+            initial={{ opacity: 0, y: 24, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 18, scale: 0.96 }}
+            transition={{ type: "spring", stiffness: 260, damping: 24 }}
+          >
+            <span className="floating-bag">
+              <ShoppingBag />
+              <b>{cartCount}</b>
+            </span>
+            <span><small>Pedido actual</small><strong>{money(cartTotal)}</strong></span>
+            <em>Revisar <ArrowRight /></em>
+          </motion.button>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -543,12 +1050,18 @@ function ReviewScreen({
 }
 
 function SuccessScreen({ result, onNew }: { result: OrderResult; onNew: () => void }) {
+  const statusMessage = result.recovered
+    ? "Este pedido ya estaba registrado; recuperamos el folio para evitar duplicados."
+    : result.status === "sale" || result.status === "done"
+      ? "Odoo confirmó la operación correctamente."
+      : "Odoo registró el pedido correctamente.";
+
   return (
     <div className="screen success-screen">
       <motion.div className="success-symbol" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: "spring", stiffness: 220, damping: 18 }}><Check /></motion.div>
       <span className="eyebrow">Pedido registrado</span>
       <h1>{result.folio}</h1>
-      <p>{result.status}. Odoo confirmó la operación correctamente.</p>
+      <p>{statusMessage}</p>
       <section className="success-total"><span>Total en Odoo</span><strong>{money(result.total)}</strong><small>Subtotal {money(result.subtotal)} · Impuestos {money(result.tax)}</small></section>
       <div className="success-actions">
         <a className="button whatsapp wide" href={result.whatsapp_url} target="_blank" rel="noreferrer">Compartir por WhatsApp <ArrowRight /></a>
@@ -558,21 +1071,613 @@ function SuccessScreen({ result, onNew }: { result: OrderResult; onNew: () => vo
   );
 }
 
-function BottomNav({ screen, cartCount, hasCustomer, navigate }: { screen: Screen; cartCount: number; hasCustomer: boolean; navigate: (screen: Screen) => void }) {
-  const items = [
-    { screen: "home" as const, label: "Inicio", icon: Home },
-    { screen: hasCustomer ? "products" as const : "clients" as const, label: "Productos", icon: PackageSearch },
-    { screen: "cart" as const, label: "Carrito", icon: ShoppingBag },
-  ];
+function HistoryScreen({
+  seller,
+  onRefresh,
+}: {
+  seller?: Seller;
+  onRefresh?: () => void;
+}) {
+  const [orders, setOrders] = useState<SellerOrderSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+
+  const fetchOrders = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await getOrderHistory(50);
+      setOrders(data.orders);
+      if (onRefresh) onRefresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No fue posible consultar el historial.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchOrders();
+  }, []);
+
+  const filtered = useMemo(() => {
+    const needle = normalize(deferredQuery);
+    if (!needle) return orders;
+    return orders.filter(
+      (o) =>
+        normalize(o.customer_name).includes(needle) ||
+        normalize(o.folio).includes(needle) ||
+        normalize(o.client_order_ref).includes(needle),
+    );
+  }, [orders, deferredQuery]);
+
+  const totalSales = useMemo(() => {
+    return filtered.reduce((sum, o) => sum + (o.state !== "cancel" ? o.amount_total : 0), 0);
+  }, [filtered]);
+
+  return (
+    <div className="screen list-screen history-screen">
+      <div className="screen-title-row">
+        <div>
+          <span className="eyebrow">Odoo · Ventas</span>
+          <h1>Historial de pedidos</h1>
+          <p>{seller ? `Pedidos asignados a ${seller.name}` : "Tus pedidos registrados en Odoo"}</p>
+        </div>
+        <button
+          type="button"
+          className="button secondary"
+          onClick={() => void fetchOrders()}
+          disabled={loading}
+        >
+          <RefreshCw className={loading ? "spin" : ""} size={16} />
+          <span>{loading ? "Actualizando…" : "Actualizar"}</span>
+        </button>
+      </div>
+
+      <div className="history-summary-card">
+        <div>
+          <small>Pedidos en Odoo</small>
+          <strong>
+            {filtered.length} {filtered.length === 1 ? "pedido" : "pedidos"}
+          </strong>
+        </div>
+        <div className="history-summary-right">
+          <small>Monto acumulado</small>
+          <strong>{money(totalSales)}</strong>
+        </div>
+      </div>
+
+      <div className="sticky-tools">
+        <label className="search-field">
+          <Search size={20} />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar por cliente o folio (S00...)"
+            autoComplete="off"
+          />
+          {query && (
+            <button type="button" onClick={() => setQuery("")} aria-label="Limpiar búsqueda">
+              <X size={18} />
+            </button>
+          )}
+        </label>
+      </div>
+
+      {loading && !orders.length ? (
+        <div className="center-state">
+          <LoaderCircle className="spin" size={32} />
+          <p>Consultando pedidos en Odoo…</p>
+        </div>
+      ) : error && !orders.length ? (
+        <div className="center-state">
+          <CircleAlert size={36} />
+          <h1>Error al cargar historial</h1>
+          <p>{error}</p>
+          <button type="button" className="button primary" onClick={() => void fetchOrders()}>
+            <RefreshCw /> Reintentar
+          </button>
+        </div>
+      ) : !filtered.length ? (
+        <EmptyState
+          icon={ListOrdered}
+          title="Sin pedidos encontrados"
+          body={
+            query
+              ? "No hay pedidos que coincidan con la búsqueda."
+              : "Aún no tienes pedidos registrados con este usuario."
+          }
+        />
+      ) : (
+        <div className="order-history-list">
+          {filtered.map((order) => {
+            const isSale = order.state === "sale" || order.state === "done";
+            const isCancel = order.state === "cancel";
+            return (
+              <article className="history-order-card" key={order.id}>
+                <div className="history-card-header">
+                  <span className="order-folio">
+                    <FileText size={15} />
+                    <strong>{order.folio}</strong>
+                  </span>
+                  <span
+                    className={`order-state-badge ${isSale ? "sale" : isCancel ? "cancel" : "draft"}`}
+                  >
+                    {order.state_label || order.state}
+                  </span>
+                </div>
+                <div className="history-card-body">
+                  <div className="history-customer-row">
+                    <UserRound size={16} />
+                    <span>{order.customer_name}</span>
+                  </div>
+                  <div className="history-date-row">
+                    <Clock size={14} />
+                    <small>
+                      {order.date_order
+                        ? new Date(order.date_order.replace(" ", "T") + "Z").toLocaleString(
+                            "es-MX",
+                            { dateStyle: "medium", timeStyle: "short" },
+                          )
+                        : "Fecha no registrada"}
+                    </small>
+                  </div>
+                  {order.client_order_ref && (
+                    <div className="history-ref-row">
+                      <small>Ref: {order.client_order_ref}</small>
+                    </div>
+                  )}
+                </div>
+                <div className="history-card-footer">
+                  <span>Total Odoo</span>
+                  <strong>{money(order.amount_total)}</strong>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OutboxScreen({
+  onNewOrder,
+  onNavigateHome,
+}: {
+  onNewOrder: () => void;
+  onNavigateHome: () => void;
+}) {
+  const [items, setItems] = useState<OutboxItem[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
+
+  const refresh = () => {
+    setItems(getOutbox());
+  };
+
+  useEffect(() => {
+    refresh();
+    const unsubscribe = subscribeOutbox(refresh);
+    return () => unsubscribe();
+  }, []);
+
+  const handleSyncAll = async () => {
+    setSyncing(true);
+    setSyncMessage("");
+    try {
+      const res = await syncAllPendingOutbox();
+      if (res.processed === 0) {
+        setSyncMessage("No hay pedidos pendientes por sincronizar.");
+      } else {
+        setSyncMessage(
+          `Procesados: ${res.processed} | Exitosos: ${res.succeeded} | Con error: ${res.failed}`,
+        );
+      }
+    } catch {
+      setSyncMessage("Error de conexión durante la sincronización.");
+    } finally {
+      setSyncing(false);
+      refresh();
+    }
+  };
+
+  const handleSyncItem = async (id: string) => {
+    setSyncing(true);
+    try {
+      await syncOutboxItem(id);
+    } finally {
+      setSyncing(false);
+      refresh();
+    }
+  };
+
+  const handleRemove = (id: string) => {
+    removeOutboxItem(id);
+    refresh();
+  };
+
+  const handleClearConfirmed = () => {
+    clearConfirmedOutbox();
+    refresh();
+  };
+
+  const pendingCount = items.filter(
+    (i) => i.status === "pending" || i.status === "sending" || i.status === "attention",
+  ).length;
+  const confirmedCount = items.filter((i) => i.status === "confirmed").length;
+
+  return (
+    <div className="screen list-screen outbox-screen">
+      <div className="screen-title-row">
+        <div>
+          <span className="eyebrow">Modo Offline & Cola</span>
+          <h1>Bandeja de pedidos</h1>
+          <p>Tus pedidos guardados en este dispositivo con protección contra duplicados</p>
+        </div>
+        <div className="outbox-top-actions">
+          {pendingCount > 0 && (
+            <button
+              type="button"
+              className="button primary"
+              onClick={() => void handleSyncAll()}
+              disabled={syncing}
+            >
+              {syncing ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
+              <span>{syncing ? "Sincronizando…" : "Sincronizar pendientes"}</span>
+            </button>
+          )}
+          {confirmedCount > 0 && (
+            <button
+              type="button"
+              className="button secondary"
+              onClick={handleClearConfirmed}
+              disabled={syncing}
+            >
+              <Trash2 size={16} />
+              <span>Limpiar confirmados</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {syncMessage && (
+        <div className="outbox-sync-alert">
+          <CircleCheck size={16} />
+          <span>{syncMessage}</span>
+        </div>
+      )}
+
+      {!items.length ? (
+        <EmptyState
+          icon={Inbox}
+          title="Bandeja vacía"
+          body="Todos tus pedidos se han sincronizado con Odoo o aún no has capturado pedidos en este dispositivo."
+        />
+      ) : (
+        <div className="outbox-list">
+          {items.map((item) => {
+            const isPending = item.status === "pending";
+            const isSending = item.status === "sending";
+            const isConfirmed = item.status === "confirmed";
+            const isAttention = item.status === "attention";
+
+            return (
+              <article className={`outbox-card ${item.status}`} key={item.id}>
+                <div className="outbox-card-header">
+                  <div className="outbox-status-tag">
+                    {isPending && (
+                      <span className="tag-pending">
+                        <Clock size={14} /> Pendiente de enviar
+                      </span>
+                    )}
+                    {isSending && (
+                      <span className="tag-sending">
+                        <LoaderCircle className="spin" size={14} /> Enviando a Odoo…
+                      </span>
+                    )}
+                    {isConfirmed && (
+                      <span className="tag-confirmed">
+                        <Check size={14} /> Confirmado en Odoo{" "}
+                        {item.result?.folio ? `(${item.result.folio})` : ""}
+                      </span>
+                    )}
+                    {isAttention && (
+                      <span className="tag-attention">
+                        <AlertTriangle size={14} /> Requiere atención
+                      </span>
+                    )}
+                  </div>
+                  <small className="outbox-timestamp">
+                    {new Date(item.created_at).toLocaleTimeString("es-MX", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </small>
+                </div>
+
+                <div className="outbox-card-body">
+                  <strong className="outbox-client-name">{item.customer_name}</strong>
+                  <div className="outbox-details">
+                    <span>{item.items_count} unidades</span>
+                    <span>·</span>
+                    <strong>{money(item.total_amount)}</strong>
+                  </div>
+                  {item.note && <p className="outbox-note">Nota: {item.note}</p>}
+                  {item.error_message && (
+                    <div className="outbox-error-box">
+                      <CircleAlert size={14} />
+                      <small>{item.error_message}</small>
+                    </div>
+                  )}
+                  <small className="outbox-ref">Ref: {item.idempotency_key}</small>
+                </div>
+
+                <div className="outbox-card-footer">
+                  {isConfirmed && item.result?.whatsapp_url ? (
+                    <a
+                      className="button whatsapp"
+                      href={item.result.whatsapp_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <Send size={15} /> Compartir WhatsApp
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      className="button primary"
+                      onClick={() => void handleSyncItem(item.id)}
+                      disabled={syncing || isSending}
+                    >
+                      <RotateCcw size={15} /> Reintentar envío
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="icon-button delete-outbox-button"
+                    onClick={() => handleRemove(item.id)}
+                    aria-label="Eliminar"
+                    title="Eliminar de bandeja"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MoreOptionsDialog({
+  open,
+  seller,
+  pendingCount = 0,
+  onClose,
+  onNavigate,
+  onRefreshCatalog,
+  onLogout,
+}: {
+  open: boolean;
+  seller?: Seller;
+  pendingCount?: number;
+  onClose: () => void;
+  onNavigate: (screen: Screen) => void;
+  onRefreshCatalog: () => void;
+  onLogout: () => void;
+}) {
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="dialog-backdrop"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) onClose();
+          }}
+        >
+          <motion.section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="more-options-title"
+            className="dialog-sheet more-options-sheet"
+            initial={{ opacity: 0, y: 35 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 35 }}
+            transition={{ type: "spring", stiffness: 320, damping: 30 }}
+          >
+            <div className="dialog-head">
+              <div>
+                <span className="eyebrow">Menú de opciones</span>
+                <h2 id="more-options-title">Más funciones</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={onClose}
+                aria-label="Cerrar menú"
+              >
+                <X />
+              </button>
+            </div>
+
+            {seller && (
+              <div className="seller-profile-banner">
+                <span className="seller-avatar">
+                  <UserRound />
+                </span>
+                <div className="seller-info">
+                  <strong>{seller.name}</strong>
+                  <small>ID de Odoo: {seller.id} · {seller.login}</small>
+                </div>
+              </div>
+            )}
+
+            <div className="more-menu-grid">
+              <button
+                type="button"
+                className="more-menu-item"
+                onClick={() => {
+                  onClose();
+                  onNavigate("outbox");
+                }}
+              >
+                <span className="more-menu-icon">
+                  <Inbox size={22} />
+                  {pendingCount > 0 && <span className="more-badge">{pendingCount}</span>}
+                </span>
+                <div className="more-menu-text">
+                  <strong>Bandeja de pedidos offline</strong>
+                  <small>
+                    {pendingCount > 0
+                      ? `${pendingCount} pedido(s) pendientes de envío`
+                      : "Cola de salida local y reintentos"}
+                  </small>
+                </div>
+                <ChevronRight size={18} className="more-arrow" />
+              </button>
+
+              <button
+                type="button"
+                className="more-menu-item"
+                onClick={() => {
+                  onClose();
+                  onNavigate("history");
+                }}
+              >
+                <span className="more-menu-icon">
+                  <History size={22} />
+                </span>
+                <div className="more-menu-text">
+                  <strong>Historial de pedidos</strong>
+                  <small>Consultar pedidos y cotizaciones en Odoo</small>
+                </div>
+                <ChevronRight size={18} className="more-arrow" />
+              </button>
+
+              <button
+                type="button"
+                className="more-menu-item"
+                onClick={() => {
+                  onClose();
+                  onRefreshCatalog();
+                }}
+              >
+                <span className="more-menu-icon">
+                  <RefreshCw size={22} />
+                </span>
+                <div className="more-menu-text">
+                  <strong>Actualizar catálogo</strong>
+                  <small>Recargar productos y clientes desde Odoo</small>
+                </div>
+                <ChevronRight size={18} className="more-arrow" />
+              </button>
+
+              <button
+                type="button"
+                className="more-menu-item danger"
+                onClick={() => {
+                  onClose();
+                  onLogout();
+                }}
+              >
+                <span className="more-menu-icon">
+                  <LogOut size={22} />
+                </span>
+                <div className="more-menu-text">
+                  <strong>Cerrar sesión</strong>
+                  <small>Salir de la cuenta del vendedor</small>
+                </div>
+                <ChevronRight size={18} className="more-arrow" />
+              </button>
+            </div>
+          </motion.section>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function BottomNav({
+  screen,
+  cartCount,
+  pendingCount = 0,
+  hasCustomer,
+  navigate,
+  onOpenMore,
+}: {
+  screen: Screen;
+  cartCount: number;
+  pendingCount?: number;
+  hasCustomer: boolean;
+  navigate: (screen: Screen) => void;
+  onOpenMore: () => void;
+}) {
+  const isMoreActive = screen === "outbox" || screen === "history";
+  const catalogLabel = hasCustomer || screen === "products" ? "Productos" : "Cliente";
+  const CatalogIcon = hasCustomer || screen === "products" ? PackageSearch : UserRoundPlus;
+
   return (
     <nav className="bottom-nav" aria-label="Navegación principal">
-      {items.map((item) => {
-        const active = screen === item.screen || (item.label === "Productos" && screen === "clients");
-        return <button type="button" key={item.label} className={active ? "active" : ""} onClick={() => navigate(item.screen)}><span><item.icon />{item.label === "Carrito" && cartCount > 0 && <b>{cartCount}</b>}</span><small>{item.label}</small></button>;
-      })}
+      <button
+        type="button"
+        className={screen === "home" ? "active" : ""}
+        onClick={() => navigate("home")}
+      >
+        <span>
+          <Home />
+        </span>
+        <small>Inicio</small>
+      </button>
+
+      <button
+        type="button"
+        className={screen === "products" || screen === "clients" ? "active" : ""}
+        onClick={() => navigate(hasCustomer ? "products" : "clients")}
+      >
+        <span>
+          <CatalogIcon />
+        </span>
+        <small>{catalogLabel}</small>
+      </button>
+
+      <button
+        type="button"
+        className={screen === "cart" || screen === "review" ? "active" : ""}
+        onClick={() => navigate("cart")}
+      >
+        <span>
+          <ShoppingBag />
+          {cartCount > 0 && <b>{cartCount}</b>}
+        </span>
+        <small>Carrito</small>
+      </button>
+
+      <button
+        type="button"
+        className={isMoreActive ? "active" : ""}
+        onClick={onOpenMore}
+        aria-label="Más opciones"
+      >
+        <span>
+          <UserRound />
+          {pendingCount > 0 && <b>{pendingCount}</b>}
+        </span>
+        <small>Perfil</small>
+      </button>
     </nav>
   );
 }
+
+
 
 function NewClientDialog({ open, busy, error, onClose, onSubmit }: { open: boolean; busy: boolean; error: string; onClose: () => void; onSubmit: (data: { name: string; email: string; street: string; postal_code: string; vat: string }) => void }) {
   const [form, setForm] = useState({ name: "", email: "", street: "", postal_code: "", vat: "" });
@@ -620,6 +1725,8 @@ export function SalesApp() {
   const reduceMotion = useReducedMotion();
   const [hydrated, setHydrated] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [currentLoginPassword, setCurrentLoginPassword] = useState("");
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [offline, setOffline] = useState(false);
@@ -636,11 +1743,23 @@ export function SalesApp() {
   const [submitBusy, setSubmitBusy] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [orderResult, setOrderResult] = useState<OrderResult | null>(null);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
 
+
   useEffect(() => {
-    setAuthenticated(hasSession());
+    let unsubscribe = () => {};
     try {
+      const savedSession = getStoredSession();
+      setSession(savedSession);
+      setAuthenticated(Boolean(hasSession() && savedSession && !savedSession.must_change_password));
+      setPendingCount(getPendingOutboxCount());
+
+      unsubscribe = subscribeOutbox(() => {
+        setPendingCount(getPendingOutboxCount());
+      });
+
       const cached = localStorage.getItem(CATALOG_KEY);
       if (cached) setCatalog(JSON.parse(cached) as Catalog);
       const saved = localStorage.getItem(DRAFT_KEY);
@@ -654,9 +1773,13 @@ export function SalesApp() {
         }
       }
     } catch {
+      clearSession();
       localStorage.removeItem(DRAFT_KEY);
+    } finally {
+      setHydrated(true);
     }
-    setHydrated(true);
+
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -673,7 +1796,7 @@ export function SalesApp() {
 
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(""), 2200);
+    const timer = window.setTimeout(() => setToast(""), 2800);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
@@ -690,6 +1813,8 @@ export function SalesApp() {
       setOffline(false);
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 401) {
+        setSession(null);
+        setCurrentLoginPassword("");
         setAuthenticated(false);
       } else if (catalog) {
         setOffline(true);
@@ -756,23 +1881,53 @@ export function SalesApp() {
   }
 
   async function submitOrder() {
-    if (!customerId || !cart.length || submitBusy) return;
+    if (!customerId || !customer || !cart.length || submitBusy) return;
     setSubmitBusy(true);
     setSubmitError("");
+
+    // Guardar en la bandeja local con estado inicial 'sending'
+    const outboxItem = enqueueOrder({
+      customerId,
+      customerName: customer.name,
+      lines: cart,
+      note,
+      idempotencyKey,
+      status: "sending",
+    });
+
     try {
       const result = await createOrder({
         customer_id: customerId,
-        lines: cart.map((line) => ({ product_id: line.productId, quantity: line.quantity, unit_price: line.unitPrice })),
+        lines: cart.map((line) => ({
+          product_id: line.productId,
+          quantity: line.quantity,
+          unit_price: line.free ? 0 : line.unitPrice,
+        })),
         note,
         idempotency_key: idempotencyKey,
       });
+
+      updateOutboxStatus(outboxItem.id, "confirmed", { result });
       setOrderResult(result);
       setScreen("success");
       localStorage.removeItem(DRAFT_KEY);
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "No fue posible enviar el pedido.";
-      setSubmitError(message);
-      if (caught instanceof ApiError && caught.status === 401) setAuthenticated(false);
+      if (caught instanceof ApiError && caught.status === 422) {
+        updateOutboxStatus(outboxItem.id, "attention", { errorMessage: caught.message });
+        setSubmitError(caught.message);
+      } else {
+        const errorMsg = caught instanceof Error ? caught.message : "Error de red";
+        updateOutboxStatus(outboxItem.id, "pending", { errorMessage: errorMsg });
+        setToast("Sin señal directa. Pedido guardado en tu Bandeja; se enviará al recuperar conexión.");
+        localStorage.removeItem(DRAFT_KEY);
+        setScreen("outbox");
+      }
+
+      if (caught instanceof ApiError && caught.status === 401) {
+        setSession(null);
+        setCurrentLoginPassword("");
+        setAuthenticated(false);
+      }
     } finally {
       setSubmitBusy(false);
     }
@@ -788,8 +1943,38 @@ export function SalesApp() {
     setScreen("clients");
   }
 
+  function acceptSession(nextSession: SessionInfo, password = "") {
+    setSession(nextSession);
+    setCurrentLoginPassword(password);
+    setAuthenticated(!nextSession.must_change_password);
+  }
+
+  function logout() {
+    clearSession();
+    setSession(null);
+    setCurrentLoginPassword("");
+    setAuthenticated(false);
+  }
+
   if (!hydrated) return <LoadingScreen />;
-  if (!authenticated) return <MotionConfig reducedMotion="user"><LoginScreen onReady={() => setAuthenticated(true)} /></MotionConfig>;
+  if (!session || !hasSession()) {
+    return <MotionConfig reducedMotion="user"><LoginScreen onReady={acceptSession} /></MotionConfig>;
+  }
+  if (session.must_change_password) {
+    return (
+      <MotionConfig reducedMotion="user">
+        <ChangePasswordScreen
+          session={session}
+          currentPassword={currentLoginPassword}
+          onReady={(nextSession) => acceptSession(nextSession)}
+          onLogout={logout}
+        />
+      </MotionConfig>
+    );
+  }
+  if (!authenticated) {
+    return <MotionConfig reducedMotion="user"><LoginScreen onReady={acceptSession} /></MotionConfig>;
+  }
   if (!catalog && loadingCatalog) return <LoadingScreen />;
   if (!catalog) return (
     <div className="center-state"><WifiOff size={36} /><h1>No pudimos cargar Odoo</h1><p>Revisa tu conexión y vuelve a intentarlo.</p><button type="button" className="button primary" onClick={() => void loadCatalog(true)}><RefreshCw /> Reintentar</button></div>
@@ -802,25 +1987,72 @@ export function SalesApp() {
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}>
       <ServiceWorker />
       <div className="app-frame">
-        <TopBar customer={customer} onCustomer={() => setScreen("clients")} onLogout={() => { clearSession(); setAuthenticated(false); }} />
+        <DesktopPointerField />
+        <TopBar
+          customer={customer}
+          seller={session.seller}
+          pendingCount={pendingCount}
+          onCustomer={() => setScreen("clients")}
+          onHistory={() => setScreen("history")}
+          onOutbox={() => setScreen("outbox")}
+          onLogout={logout}
+        />
         {offline && <div className="offline-banner"><WifiOff size={15} /> Usando el catálogo guardado. El pedido se enviará cuando haya conexión.<button type="button" onClick={() => void loadCatalog(true)}><RefreshCw size={15} /> Reintentar</button></div>}
         <main className="app-main" ref={mainRef}>
           <AnimatePresence initial={false} mode="wait">
             <motion.div key={screen} {...pageMotion} className="screen-motion">
-              {screen === "home" && <HomeScreen customer={customer} cart={cart} onStart={() => setScreen("clients")} onProducts={() => setScreen(customer ? "products" : "clients")} onCart={() => setScreen("cart")} />}
+              {screen === "home" && (
+                <HomeScreen
+                  customer={customer}
+                  seller={session.seller}
+                  cart={cart}
+                  pendingCount={pendingCount}
+                  onStart={() => setScreen("clients")}
+                  onProducts={() => setScreen(customer ? "products" : "clients")}
+                  onCart={() => setScreen("cart")}
+                  onHistory={() => setScreen("history")}
+                  onOutbox={() => setScreen("outbox")}
+                />
+              )}
               {screen === "clients" && <ClientScreen clients={catalog.clients} selectedId={customerId} onSelect={selectClient} onNew={() => { setClientError(""); setNewClientOpen(true); }} />}
-              {screen === "products" && <ProductScreen products={catalog.products} cart={cart} onAdd={addProduct} onPromo={setPromoProduct} />}
+              {screen === "products" && <ProductScreen products={catalog.products} cart={cart} onAdd={addProduct} onPromo={setPromoProduct} onCart={() => setScreen("cart")} />}
               {screen === "cart" && <CartScreen cart={cart} onChange={updateLine} onRemove={removeLine} onProducts={() => setScreen(customer ? "products" : "clients")} onReview={() => customer ? setScreen("review") : setScreen("clients")} />}
               {screen === "review" && customer && <ReviewScreen customer={customer} cart={cart} note={note} busy={submitBusy} error={submitError} onNote={setNote} onBack={() => setScreen("cart")} onSubmit={() => void submitOrder()} />}
               {screen === "success" && orderResult && <SuccessScreen result={orderResult} onNew={startNewOrder} />}
+              {screen === "history" && <HistoryScreen seller={session.seller} onRefresh={() => void loadCatalog(false)} />}
+              {screen === "outbox" && <OutboxScreen onNewOrder={startNewOrder} onNavigateHome={() => setScreen("home")} />}
             </motion.div>
           </AnimatePresence>
         </main>
-        {screen !== "success" && <BottomNav screen={screen} cartCount={cartCount} hasCustomer={Boolean(customer)} navigate={navigate} />}
+        {screen !== "success" && (
+          <BottomNav
+            screen={screen}
+            cartCount={cartCount}
+            pendingCount={pendingCount}
+            hasCustomer={Boolean(customer)}
+            navigate={navigate}
+            onOpenMore={() => setMoreMenuOpen(true)}
+          />
+        )}
       </div>
+      <MoreOptionsDialog
+        open={moreMenuOpen}
+        seller={session.seller}
+        pendingCount={pendingCount}
+        onClose={() => setMoreMenuOpen(false)}
+        onNavigate={(targetScreen) => {
+          setMoreMenuOpen(false);
+          navigate(targetScreen);
+        }}
+        onRefreshCatalog={() => {
+          void loadCatalog(true);
+          setToast("Catálogo actualizado desde Odoo");
+        }}
+        onLogout={logout}
+      />
       <NewClientDialog open={newClientOpen} busy={clientBusy} error={clientError} onClose={() => setNewClientOpen(false)} onSubmit={(data) => void submitNewClient(data)} />
       <PromoDialog product={promoProduct} onClose={() => setPromoProduct(null)} onAdd={addPromotion} />
-      <AnimatePresence>{toast && <motion.div className="toast" role="status" initial={{ opacity: 0, y: 18, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12 }}><Check size={17} /> {toast}</motion.div>}</AnimatePresence>
+      <AnimatePresence>{toast && <motion.div className="toast" role="status" initial={{ opacity: 0, x: "-50%", y: 18, scale: 0.96 }} animate={{ opacity: 1, x: "-50%", y: 0, scale: 1 }} exit={{ opacity: 0, x: "-50%", y: 12 }}><Check size={17} /> {toast}</motion.div>}</AnimatePresence>
     </MotionConfig>
   );
 }

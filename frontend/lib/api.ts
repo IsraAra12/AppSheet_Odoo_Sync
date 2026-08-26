@@ -1,7 +1,15 @@
-import type { Catalog, Client, OrderResult } from "@/lib/types";
+import type {
+  Catalog,
+  Client,
+  OrderResult,
+  SellerOrderSummary,
+  SessionInfo,
+  TemporarySellerKey,
+} from "@/lib/types";
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/$/, "");
 const TOKEN_KEY = "rapyvet_session_v2";
+const SESSION_INFO_KEY = "rapyvet_session_info_v2";
 
 export class ApiError extends Error {
   constructor(
@@ -16,8 +24,26 @@ export function hasSession() {
   return typeof window !== "undefined" && Boolean(localStorage.getItem(TOKEN_KEY));
 }
 
+export function getStoredSession() {
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem(SESSION_INFO_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as SessionInfo;
+  } catch {
+    localStorage.removeItem(SESSION_INFO_KEY);
+    return null;
+  }
+}
+
 export function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(SESSION_INFO_KEY);
+}
+
+function storeSession(session: SessionInfo) {
+  localStorage.setItem(TOKEN_KEY, session.token);
+  localStorage.setItem(SESSION_INFO_KEY, JSON.stringify(session));
 }
 
 async function request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
@@ -44,13 +70,34 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
   return body as T;
 }
 
-export async function login(pin: string) {
-  const result = await request<{ token: string }>(
+export async function login(loginName: string, password: string) {
+  const result = await request<SessionInfo>(
     "/api/session",
-    { method: "POST", body: JSON.stringify({ pin }) },
+    { method: "POST", body: JSON.stringify({ login: loginName, password }) },
     false,
   );
-  localStorage.setItem(TOKEN_KEY, result.token);
+  storeSession(result);
+  return result;
+}
+
+export async function changePassword(currentPassword: string, newPassword: string) {
+  const result = await request<SessionInfo>("/api/session/change-password", {
+    method: "POST",
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+  storeSession(result);
+  return result;
+}
+
+export function generateTemporarySellerKeys(adminPin: string, resetExisting: boolean) {
+  return request<{ sellers: TemporarySellerKey[]; generated_at: number }>(
+    "/api/admin/sellers/temporary-keys",
+    {
+      method: "POST",
+      body: JSON.stringify({ admin_pin: adminPin, reset_existing: resetExisting }),
+    },
+    false,
+  );
 }
 
 export function getCatalog(refresh = false) {
@@ -81,3 +128,10 @@ export function createOrder(data: {
     body: JSON.stringify(data),
   });
 }
+
+export function getOrderHistory(limit = 30) {
+  return request<{ orders: SellerOrderSummary[]; total: number }>(
+    `/api/orders/history?limit=${limit}`,
+  );
+}
+

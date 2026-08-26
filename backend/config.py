@@ -3,7 +3,30 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except Exception:
+    pass
+
+_secrets_path = Path(__file__).resolve().parent.parent / ".streamlit" / "secrets.toml"
+if _secrets_path.exists():
+    try:
+        import toml
+        _sec = toml.load(str(_secrets_path)).get("odoo", {})
+        if not os.getenv("ODOO_URL") and _sec.get("url"):
+            os.environ["ODOO_URL"] = str(_sec["url"])
+        if not os.getenv("ODOO_DB") and _sec.get("db"):
+            os.environ["ODOO_DB"] = str(_sec["db"])
+        if not os.getenv("ODOO_USER") and _sec.get("user"):
+            os.environ["ODOO_USER"] = str(_sec["user"])
+        if not os.getenv("ODOO_PASSWORD") and _sec.get("password"):
+            os.environ["ODOO_PASSWORD"] = str(_sec["password"])
+    except Exception:
+        pass
 
 class ConfigurationError(RuntimeError):
     """Indica que falta una variable necesaria para operar la API."""
@@ -21,6 +44,7 @@ def _boolean(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "si", "sí", "on"}
 
 
+
 @dataclass(frozen=True)
 class Settings:
     odoo_url: str
@@ -29,6 +53,7 @@ class Settings:
     odoo_password: str
     access_pin: str
     session_secret: str
+    seller_temp_secret: str
     frontend_origins: tuple[str, ...]
     odoo_timeout_seconds: float = 30.0
     catalog_cache_seconds: int = 300
@@ -59,6 +84,7 @@ def get_settings() -> Settings:
         odoo_password=_required("ODOO_PASSWORD"),
         access_pin=access_pin,
         session_secret=session_secret,
+        seller_temp_secret=os.getenv("APP_SELLER_TEMP_SECRET", session_secret),
         frontend_origins=origins,
         odoo_timeout_seconds=float(os.getenv("ODOO_TIMEOUT_SECONDS", "30")),
         catalog_cache_seconds=int(os.getenv("CATALOG_CACHE_SECONDS", "300")),

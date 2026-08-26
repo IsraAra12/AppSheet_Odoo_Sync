@@ -4,12 +4,50 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class SessionRequest(BaseModel):
-    pin: str = Field(min_length=4, max_length=128)
+    login: str = Field(min_length=1, max_length=160)
+    password: str = Field(min_length=4, max_length=128)
+
+    @field_validator("login")
+    @classmethod
+    def clean_login(cls, value: str) -> str:
+        return value.strip()
+
+
+class Seller(BaseModel):
+    id: int
+    name: str
+    login: str
+    email: str = ""
 
 
 class SessionResponse(BaseModel):
     token: str
     expires_in: int
+    seller: Seller
+    must_change_password: bool
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=4, max_length=128)
+    new_password: str = Field(min_length=4, max_length=128)
+
+
+
+class TemporarySellerKeysRequest(BaseModel):
+    admin_pin: str = Field(min_length=6, max_length=128)
+    reset_existing: bool = False
+
+
+class TemporarySellerKey(BaseModel):
+    seller: Seller
+    temporary_password: str = ""
+    status: str
+    must_change_password: bool
+
+
+class TemporarySellerKeysResponse(BaseModel):
+    sellers: list[TemporarySellerKey]
+    generated_at: int
 
 
 class Client(BaseModel):
@@ -81,3 +119,21 @@ class OrderResponse(BaseModel):
     recovered: bool
     whatsapp_message: str
     whatsapp_url: str
+
+
+class SellerOrderSummary(BaseModel):
+    id: int
+    folio: str
+    customer_id: int
+    customer_name: str
+    amount_total: float
+    state: str
+    state_label: str
+    date_order: str
+    client_order_ref: str = ""
+
+
+class SellerOrdersResponse(BaseModel):
+    orders: list[SellerOrderSummary]
+    total: int
+

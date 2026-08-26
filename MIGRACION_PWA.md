@@ -21,29 +21,36 @@ La aplicación de Streamlit puede seguir operando mientras se valida la PWA. No 
 
 ## Lo que ya incluye la PWA
 
-- Diseño móvil primero con la paleta ciruela de RapyVet.
-- Barra inferior con espacio fijo; no se comprime ni queda fuera de pantalla.
-- Catálogo con desplazamiento independiente: el buscador no brinca al filtrar.
-- Búsqueda local rápida por nombre o código.
-- Carrito persistente durante 24 horas en el dispositivo.
-- Venta normal, promociones y líneas gratuitas.
-- Edición de cantidad y precio.
-- Alta de clientes con nombre, correo, dirección, código postal y RFC opcional.
-- Revisión antes del envío.
-- Referencia idempotente para reintentar sin duplicar pedidos.
-- Mensaje de WhatsApp después de que Odoo confirma el pedido.
-- Instalación como app desde la pantalla de inicio del teléfono.
-- Catálogo guardado para consulta cuando la señal se interrumpe.
+- **Identificación por vendedor:** Acceso individual conectado con usuarios de ventas de Odoo (`res.users`).
+- **Claves temporales y cambio obligatorio:** Claves de primer acceso gestionables por el administrador y forzado de cambio de clave segura al primer ingreso.
+- **Atribución de ventas en Odoo:** Cada pedido creado asigna automáticamente el `user_id` del vendedor responsable.
+- **Bandeja de pedidos pendientes (Offline Outbox):** Si se pierde la señal, el pedido se guarda localmente con estados claros (*Pendiente*, *Enviando*, *Confirmado*, *Requiere atención*) y se sincroniza automáticamente al recuperar conexión.
+- **Historial de pedidos por vendedor:** Consulta directa en Odoo de los pedidos y cotizaciones asignados al vendedor activo, con folios (`S00XXX`), montos e importe acumulado.
+- **Diseño móvil primero:** Paleta ciruela de RapyVet y navegación fluida.
+- **Barra inferior con espacio fijo:** No se comprime ni queda fuera de pantalla.
+- **Catálogo con desplazamiento independiente:** El buscador permanece fijo al filtrar.
+- **Búsqueda local rápida:** Por nombre o código de producto.
+- **Carrito persistente durante 24 horas** en el dispositivo.
+- **Venta normal, promociones y líneas gratuitas** (1+1, 2+2, 4+1, 10+2, 11+1).
+- **Edición de cantidad y precio.**
+- **Alta de clientes en campo** con nombre, correo, dirección, código postal y RFC opcional.
+- **Revisión antes del envío.**
+- **Referencia idempotente** para reintentar sin duplicar pedidos.
+- **Mensaje de WhatsApp** con el nombre del vendedor y detalle del pedido después de la confirmación en Odoo.
+- **Instalación como PWA** desde la pantalla de inicio en Android y iPhone.
+- **Catálogo guardado** para consulta cuando la señal se interrumpe.
 
-## Seguridad
+## Seguridad y Acceso de Vendedores
 
-- Las credenciales de Odoo viven únicamente en Cloud Run.
+- Las credenciales maestras de Odoo viven únicamente en Cloud Run.
 - Cloudflare solo recibe la URL pública de la API.
-- La API requiere un código de acceso y entrega sesiones firmadas de 12 horas.
-- El origen permitido debe limitarse al dominio `pages.dev` final.
-- El repositorio debe permanecer privado.
-- `APP_SESSION_SECRET` debe ser una cadena aleatoria de al menos 32 caracteres.
-- `APP_ACCESS_PIN` debe tener al menos 6 caracteres y compartirse solo con ventas.
+- **Autenticación por Vendedor:** Los vendedores inician sesión con su usuario/correo de Odoo y su clave personal (hasheada con `PBKDF2-HMAC-SHA256`).
+- **Claves Temporales:** El administrador puede ingresar con el `APP_ACCESS_PIN` en la pantalla de login para consultar o regenerar las claves temporales generadas con HMAC para cada vendedor.
+- **Cambio Obligatorio:** Si un vendedor entra con clave temporal, la API restringe todas las operaciones hasta que defina su nueva contraseña personal de al menos 8 caracteres con letras y números.
+- El origen permitido debe limitarse al dominio `pages.dev` final (`FRONTEND_ORIGINS`).
+- `APP_SESSION_SECRET`: cadena aleatoria de al menos 32 caracteres para firmar los tokens de sesión.
+- `APP_ACCESS_PIN`: clave de administración de al menos 6 caracteres.
+- `APP_SELLER_TEMP_SECRET`: semilla para derivación determinista de claves temporales de vendedores.
 
 ## Prueba local
 
@@ -100,6 +107,7 @@ ODOO_USER
 ODOO_PASSWORD
 APP_ACCESS_PIN
 APP_SESSION_SECRET
+APP_SELLER_TEMP_SECRET
 FRONTEND_ORIGINS=https://NOMBRE.pages.dev
 CONFIRM_ORDERS=false
 CATALOG_CACHE_SECONDS=300
@@ -128,18 +136,20 @@ El contenedor escucha automáticamente el puerto asignado por Cloud Run.
 
 ## Pruebas antes del cambio definitivo
 
-- Ingreso con el código de acceso.
+- Ingreso del administrador para consultar claves temporales de vendedores.
+- Primer ingreso de un vendedor con clave temporal y cambio obligatorio a clave personal.
 - Carga de todos los clientes, incluidos los recién creados sin pedidos.
-- Alta de un cliente de prueba autorizada.
+- Alta de un cliente de prueba autorizada en campo.
 - Búsqueda continua de varios productos sin recuperar el texto anterior.
 - Scroll del catálogo mientras el buscador permanece inmóvil.
-- Agregar productos sin cambiar la posición del scroll.
 - Promoción con una línea cobrada y otra gratuita.
 - Edición de cantidades y precios.
-- Pedido de prueba en Odoo con folio, impuestos y total correctos.
-- Factura sin descripción duplicada.
-- Reintento con la misma referencia sin duplicar el pedido.
-- Apertura del mensaje de WhatsApp.
-- Instalación en Android y iPhone.
+- Captura de pedido sin señal: verificación de guardado en la Bandeja de pedidos.
+- Sincronización automática de la bandeja al recuperar conexión.
+- Verificación del pedido en Odoo con `user_id` del vendedor asignado, folio, impuestos y total correctos.
+- Consulta del pedido recién creado en la pantalla de Historial de pedidos.
+- Apertura del mensaje de WhatsApp con el nombre del vendedor.
+- Instalación de la PWA en Android y iPhone.
 
 Cuando todas las pruebas estén aprobadas, se comparte el enlace `pages.dev` con ventas y se conserva Streamlit como respaldo durante al menos una semana.
+

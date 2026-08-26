@@ -4,7 +4,7 @@ import unittest
 from typing import Any
 
 from backend.config import Settings
-from backend.odoo_service import OdooService
+from backend.odoo_service import OdooService, Seller
 from backend.schemas import CreateOrderRequest, OrderLine
 
 
@@ -18,6 +18,7 @@ class FakeOdooService(OdooService):
                 odoo_password="password",
                 access_pin="1234",
                 session_secret="secret",
+                seller_temp_secret="temp-secret",
                 frontend_origins=("http://localhost:3000",),
             )
         )
@@ -66,7 +67,8 @@ class BackendOrderTests(unittest.TestCase):
                 customer_id=10,
                 lines=[OrderLine(product_id=5, quantity=2, unit_price=50)],
                 idempotency_key="RV-12345678",
-            )
+            ),
+            seller=Seller(id=7, name="Vendedora Prueba", login="ventas@example.com"),
         )
 
         self.assertEqual(result.folio, "S00099")
@@ -77,7 +79,37 @@ class BackendOrderTests(unittest.TestCase):
         self.assertNotIn("tax_id", line)
         self.assertEqual(line["product_uom_qty"], 2)
         self.assertEqual(service.created_values["client_order_ref"], "RV-12345678")
+        self.assertEqual(service.created_values["user_id"], 7)
+
+    def test_list_seller_orders(self) -> None:
+        service = FakeOdooService()
+
+        def custom_call(model: str, method: str, args: list[Any], kwargs: dict[str, Any] | None = None, **_: Any) -> Any:
+            if model == "sale.order" and method == "search_read":
+                domain = args[0]
+                self.assertEqual(domain, [("user_id", "=", 7)])
+                return [
+                    {
+                        "id": 101,
+                        "name": "S00101",
+                        "partner_id": [20, "Veterinaria El Sol"],
+                        "amount_total": 450.50,
+                        "state": "sale",
+                        "date_order": "2026-08-25 12:00:00",
+                        "client_order_ref": "RV-12345678",
+                    }
+                ]
+            return service._call(model, method, args, kwargs)
+
+        service._call = custom_call  # type: ignore[assignment]
+        orders = service.list_seller_orders(7)
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0]["folio"], "S00101")
+        self.assertEqual(orders[0]["customer_name"], "Veterinaria El Sol")
+        self.assertEqual(orders[0]["state_label"], "Pedido de venta")
+        self.assertEqual(orders[0]["amount_total"], 450.50)
 
 
 if __name__ == "__main__":
+
     unittest.main()

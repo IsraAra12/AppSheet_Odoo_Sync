@@ -23,26 +23,30 @@ Ambas interfaces comparten el mismo cliente, carrito, promociones, notas, conexi
 
 ## Funciones principales
 
-- Consulta clientes y productos activos en Odoo.
-- Búsqueda de productos en tiempo real en móvil.
-- Venta rápida al precio de lista.
-- Edición manual de cantidades y precios.
-- Productos repetidos en el mismo pedido.
-- Promociones personalizadas como `1+1`, `2+2`, `4+1`, `10+2` o `11+1`.
-- Cada promoción genera exactamente dos líneas:
+- **Identificación por vendedor:** Acceso individual conectado con Odoo (`res.users`), claves temporales y cambio obligatorio en primer ingreso.
+- **Atribución en Odoo:** Asignación automática de `user_id` del vendedor a cada pedido y en el mensaje de WhatsApp.
+- **Bandeja de pedidos offline:** Almacenamiento local seguro cuando no hay señal, con reintentos y sincronización automática.
+- **Historial de pedidos:** Consulta directa en Odoo de pedidos anteriores asignados al vendedor activo.
+- **Consulta clientes y productos activos en Odoo.**
+- **Búsqueda de productos en tiempo real en móvil.**
+- **Venta rápida al precio de lista.**
+- **Edición manual de cantidades y precios.**
+- **Productos repetidos en el mismo pedido.**
+- **Promociones personalizadas** como `1+1`, `2+2`, `4+1`, `10+2` o `11+1`.
+- **Cada promoción genera exactamente dos líneas:**
   - Una línea con precio.
   - Una línea del mismo producto a `$0.00`.
-- Carrito editable.
-- Creación de cotización o pedido en Odoo.
-- Mensaje sencillo para compartir por WhatsApp.
-- Tema claro u oscuro según el dispositivo.
-- Interfaz móvil y de escritorio separadas.
-- Revisión final del cliente, productos y total antes de enviar.
-- Referencia de seguridad para recuperar reintentos sin duplicar pedidos.
-- Conexiones con timeout para evitar pantallas bloqueadas indefinidamente.
-- Clientes recientes al inicio del selector.
-- Alta rápida de clientes en Odoo desde teléfono, tableta o computadora.
-- Movimiento visual accesible, con reducción automática de animaciones cuando el dispositivo lo solicita.
+- **Carrito editable.**
+- **Creación de cotización o pedido en Odoo.**
+- **Mensaje sencillo para compartir por WhatsApp.**
+- **Tema adaptativo y diseño móvil primero.**
+- **Interfaz móvil y de escritorio optimizadas.**
+- **Revisión final del cliente, productos y total antes de enviar.**
+- **Referencia de seguridad (Idempotencia)** para recuperar reintentos sin duplicar pedidos.
+- **Conexiones con timeout** para evitar pantallas bloqueadas indefinidamente.
+- **Clientes recientes al inicio del selector.**
+- **Alta rápida de clientes en Odoo** desde teléfono, tableta o computadora.
+- **Movimiento visual accesible**, con reducción automática de animaciones cuando el dispositivo lo solicita.
 
 ---
 
@@ -63,6 +67,7 @@ Antes de crear el contacto, la aplicación busca coincidencias por correo o RFC.
 El usuario configurado para la conexión necesita permisos de lectura, creación y edición sobre contactos (`res.partner`).
 
 ---
+
 
 ## Interfaz móvil
 
