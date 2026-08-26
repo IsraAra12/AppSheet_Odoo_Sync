@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Clock,
   Copy,
+  Download,
   FileText,
   History,
   Home,
@@ -102,9 +103,14 @@ import type {
 
 type Screen = "home" | "clients" | "products" | "cart" | "review" | "success" | "history" | "outbox";
 
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+};
+
 const DRAFT_KEY = "rapyvet_order_draft_v2";
 const CATALOG_KEY = "rapyvet_catalog_v2";
-const FIRST_USE_TUTORIAL_KEY = "rapyvet_first_use_tutorial_seen_v1";
+const FIRST_USE_TUTORIAL_KEY = "rapyvet_first_use_tutorial_seen_v2";
 const VISIBLE_STEP = 30;
 
 const pageMotion = {
@@ -156,6 +162,75 @@ function firstName(name = "") {
 
 function tutorialSeenKey(sellerId?: number) {
   return sellerId ? `${FIRST_USE_TUTORIAL_KEY}.${sellerId}` : FIRST_USE_TUTORIAL_KEY;
+}
+
+function isAppRunningStandalone() {
+  if (typeof window === "undefined") return false;
+  const navigatorWithStandalone = navigator as Navigator & { standalone?: boolean };
+  return (
+    window.matchMedia("(display-mode: standalone)").matches ||
+    window.matchMedia("(display-mode: fullscreen)").matches ||
+    navigatorWithStandalone.standalone === true
+  );
+}
+
+function usePwaInstall() {
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installed, setInstalled] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  useEffect(() => {
+    const updateInstalled = () => setInstalled(isAppRunningStandalone());
+    updateInstalled();
+
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setDeferredPrompt(event as BeforeInstallPromptEvent);
+    };
+    const onInstalled = () => {
+      setInstalled(true);
+      setDeferredPrompt(null);
+      setHelpOpen(false);
+    };
+
+    const standaloneQuery = window.matchMedia("(display-mode: standalone)");
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", onInstalled);
+    standaloneQuery.addEventListener?.("change", updateInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", onInstalled);
+      standaloneQuery.removeEventListener?.("change", updateInstalled);
+    };
+  }, []);
+
+  async function requestInstall() {
+    if (installed) return "installed" as const;
+    if (!deferredPrompt) {
+      setHelpOpen(true);
+      return "manual" as const;
+    }
+
+    const promptEvent = deferredPrompt;
+    setDeferredPrompt(null);
+    await promptEvent.prompt();
+    const choice = await promptEvent.userChoice.catch(() => ({ outcome: "dismissed" as const, platform: "" }));
+    if (choice.outcome === "accepted") {
+      setInstalled(true);
+      return "accepted" as const;
+    }
+    setHelpOpen(true);
+    return "dismissed" as const;
+  }
+
+  return {
+    canInstall: Boolean(deferredPrompt) && !installed,
+    helpOpen,
+    installed,
+    requestInstall,
+    setHelpOpen,
+  };
 }
 
 function DesktopPointerField() {
@@ -238,6 +313,7 @@ type TutorialStep = {
   body: string;
   icon: typeof Search;
   bullets: string[];
+  installStep?: boolean;
   target?: Screen;
   visualItems: Array<{ icon: typeof Search; label: string }>;
 };
@@ -245,10 +321,16 @@ type TutorialStep = {
 function FirstUseTutorial({
   open,
   seller,
+  canInstallApp,
+  appInstalled,
+  onInstall,
   onDone,
 }: {
   open: boolean;
   seller?: Seller;
+  canInstallApp: boolean;
+  appInstalled: boolean;
+  onInstall: () => void;
   onDone: (target?: Screen) => void;
 }) {
   const [step, setStep] = useState(0);
@@ -339,12 +421,31 @@ function FirstUseTutorial({
         ],
         target: "clients",
       },
+      {
+        label: "Instalación",
+        title: "Instala RapyVet como app.",
+        body: "Déjala como acceso directo tipo app de Chrome para abrirla más rápido durante la ruta, sin buscar la liga cada vez.",
+        icon: Download,
+        installStep: true,
+        bullets: [
+          "En Chrome y Android, el botón puede abrir la instalación automática.",
+          "En iPhone o si Chrome no muestra el instalador, te damos pasos rápidos.",
+          "La app seguirá conectada a Odoo y conservará la sesión del vendedor.",
+        ],
+        visualItems: [
+          { icon: Download, label: "Instalar" },
+          { icon: Home, label: "Inicio" },
+          { icon: Sparkles, label: "Listo" },
+        ],
+        target: "clients",
+      },
     ],
     [sellerFirstName],
   );
   const current = steps[step];
   const CurrentIcon = current.icon;
   const isLast = step === steps.length - 1;
+  const installLabel = appInstalled ? "App instalada" : canInstallApp ? "Instalar app" : "Ver cómo instalar";
 
   useEffect(() => {
     if (open) setStep(0);
@@ -455,6 +556,17 @@ function FirstUseTutorial({
                       </li>
                     ))}
                   </ul>
+                  {current.installStep && (
+                    <motion.button
+                      type="button"
+                      className="button install-cta wide"
+                      onClick={onInstall}
+                      whileTap={{ scale: 0.98 }}
+                    >
+                      {appInstalled ? <BadgeCheck /> : <Download />}
+                      {installLabel}
+                    </motion.button>
+                  )}
                 </div>
               </motion.div>
             </AnimatePresence>
@@ -769,7 +881,7 @@ function AdminKeysDialog({ open, onClose }: { open: boolean; onClose: () => void
     <AnimatePresence>
       {open && (
         <motion.div
-          className="dialog-backdrop"
+          className="dialog-backdrop install-help-backdrop"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -1731,8 +1843,11 @@ function MoreOptionsDialog({
   open,
   seller,
   pendingCount = 0,
+  canInstallApp,
+  appInstalled,
   onClose,
   onNavigate,
+  onInstall,
   onRefreshCatalog,
   onTutorial,
   onLogout,
@@ -1740,12 +1855,22 @@ function MoreOptionsDialog({
   open: boolean;
   seller?: Seller;
   pendingCount?: number;
+  canInstallApp: boolean;
+  appInstalled: boolean;
   onClose: () => void;
   onNavigate: (screen: Screen) => void;
+  onInstall: () => void;
   onRefreshCatalog: () => void;
   onTutorial: () => void;
   onLogout: () => void;
 }) {
+  const installTitle = appInstalled ? "App instalada" : "Instalar app";
+  const installDescription = appInstalled
+    ? "RapyVet ya está corriendo como aplicación"
+    : canInstallApp
+      ? "Agregar a Chrome como app de pedidos"
+      : "Ver pasos para agregarla a Chrome o al inicio";
+
   return (
     <AnimatePresence>
       {open && (
@@ -1796,6 +1921,24 @@ function MoreOptionsDialog({
             )}
 
             <div className="more-menu-grid">
+              <button
+                type="button"
+                className="more-menu-item install"
+                onClick={() => {
+                  onClose();
+                  onInstall();
+                }}
+              >
+                <span className="more-menu-icon">
+                  {appInstalled ? <BadgeCheck size={22} /> : <Download size={22} />}
+                </span>
+                <div className="more-menu-text">
+                  <strong>{installTitle}</strong>
+                  <small>{installDescription}</small>
+                </div>
+                <ChevronRight size={18} className="more-arrow" />
+              </button>
+
               <button
                 type="button"
                 className="more-menu-item"
@@ -1891,6 +2034,104 @@ function MoreOptionsDialog({
                 <ChevronRight size={18} className="more-arrow" />
               </button>
             </div>
+          </motion.section>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function InstallHelpDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const steps = [
+    {
+      title: "Android / Chrome",
+      body: "Toca el menú de tres puntos y elige Instalar app o Agregar a pantalla principal.",
+      icon: Menu,
+    },
+    {
+      title: "Computadora / Chrome",
+      body: "Busca el ícono de instalar en la barra de direcciones o entra a menú > Guardar y compartir > Instalar página como app.",
+      icon: Download,
+    },
+    {
+      title: "iPhone",
+      body: "Abre la liga en Safari, toca Compartir y selecciona Agregar a inicio.",
+      icon: Home,
+    },
+  ];
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="dialog-backdrop"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) onClose();
+          }}
+        >
+          <motion.section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="install-help-title"
+            className="dialog-sheet install-help-sheet"
+            initial={{ opacity: 0, y: 35, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 26, scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 320, damping: 30 }}
+          >
+            <div className="dialog-head">
+              <div>
+                <span className="eyebrow">Instalación rápida</span>
+                <h2 id="install-help-title">Instalar RapyVet como app</h2>
+              </div>
+              <button type="button" className="icon-button" onClick={onClose} aria-label="Cerrar instalación">
+                <X />
+              </button>
+            </div>
+
+            <div className="install-hero" aria-hidden="true">
+              <motion.span
+                animate={{ y: [0, -6, 0], rotate: [0, -2, 2, 0] }}
+                transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+              >
+                <Download />
+              </motion.span>
+              <div>
+                <strong>Un toque y queda en el teléfono.</strong>
+                <small>Así los vendedores abren la app como si fuera una aplicación normal.</small>
+              </div>
+            </div>
+
+            <div className="install-help-list">
+              {steps.map((item, index) => {
+                const Icon = item.icon;
+                return (
+                  <motion.article
+                    key={item.title}
+                    className="install-help-item"
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: index * 0.06 }}
+                  >
+                    <span>
+                      <Icon />
+                    </span>
+                    <div>
+                      <strong>{item.title}</strong>
+                      <small>{item.body}</small>
+                    </div>
+                  </motion.article>
+                );
+              })}
+            </div>
+
+            <button type="button" className="button primary wide" onClick={onClose}>
+              Entendido
+              <Check />
+            </button>
           </motion.section>
         </motion.div>
       )}
@@ -2038,6 +2279,7 @@ export function SalesApp() {
   const [pendingCount, setPendingCount] = useState(0);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const pwaInstall = usePwaInstall();
   const mainRef = useRef<HTMLElement>(null);
 
 
@@ -2278,6 +2520,19 @@ export function SalesApp() {
     setTutorialOpen(true);
   }
 
+  async function installApp() {
+    const result = await pwaInstall.requestInstall();
+    if (result === "installed") {
+      setToast("La app ya está instalada.");
+    } else if (result === "accepted") {
+      setToast("Instalando RapyVet como app…");
+    } else if (result === "dismissed") {
+      setToast("Instalación cancelada. Te dejo los pasos manuales.");
+    } else {
+      setToast("Te dejo los pasos para instalar la app.");
+    }
+  }
+
   if (!hydrated) return <LoadingScreen />;
   if (!session || !hasSession()) {
     return <MotionConfig reducedMotion="user"><LoginScreen onReady={acceptSession} /></MotionConfig>;
@@ -2361,11 +2616,14 @@ export function SalesApp() {
         open={moreMenuOpen}
         seller={session.seller}
         pendingCount={pendingCount}
+        canInstallApp={pwaInstall.canInstall}
+        appInstalled={pwaInstall.installed}
         onClose={() => setMoreMenuOpen(false)}
         onNavigate={(targetScreen) => {
           setMoreMenuOpen(false);
           navigate(targetScreen);
         }}
+        onInstall={() => void installApp()}
         onRefreshCatalog={() => {
           void loadCatalog(true);
           setToast("Catálogo actualizado desde Odoo");
@@ -2373,9 +2631,17 @@ export function SalesApp() {
         onTutorial={openTutorial}
         onLogout={logout}
       />
+      <InstallHelpDialog open={pwaInstall.helpOpen} onClose={() => pwaInstall.setHelpOpen(false)} />
       <NewClientDialog open={newClientOpen} busy={clientBusy} error={clientError} onClose={() => setNewClientOpen(false)} onSubmit={(data) => void submitNewClient(data)} />
       <PromoDialog product={promoProduct} onClose={() => setPromoProduct(null)} onAdd={addPromotion} />
-      <FirstUseTutorial open={tutorialOpen} seller={session.seller} onDone={finishTutorial} />
+      <FirstUseTutorial
+        open={tutorialOpen}
+        seller={session.seller}
+        canInstallApp={pwaInstall.canInstall}
+        appInstalled={pwaInstall.installed}
+        onInstall={() => void installApp()}
+        onDone={finishTutorial}
+      />
       <AnimatePresence>{toast && <motion.div className="toast" role="status" initial={{ opacity: 0, x: "-50%", y: 18, scale: 0.96 }} animate={{ opacity: 1, x: "-50%", y: 0, scale: 1 }} exit={{ opacity: 0, x: "-50%", y: 12 }}><Check size={17} /> {toast}</motion.div>}</AnimatePresence>
     </MotionConfig>
   );
