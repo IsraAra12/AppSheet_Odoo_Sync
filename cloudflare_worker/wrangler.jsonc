@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rapyvet-pedidos-api",
+  "main": "src/main.py",
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": ["python_workers"],
+  "vars": {
+    "FRONTEND_ORIGINS": "http://localhost:3000,http://127.0.0.1:3000,https://*.pages.dev,https://*.vercel.app",
+    "ODOO_TIMEOUT_SECONDS": "30",
+    "CATALOG_CACHE_SECONDS": "300",
+    "CONFIRM_ORDERS": "false"
+  }
+}

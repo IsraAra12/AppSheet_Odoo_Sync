@@ -6,10 +6,12 @@ from backend.security import (
     LoginThrottle,
     create_session_token,
     hash_password,
+    hash_seller_password,
     password_errors,
     read_session_token,
     verify_password,
     verify_pin,
+    verify_seller_password,
     verify_session_token,
 )
 
@@ -52,6 +54,48 @@ class BackendSecurityTests(unittest.TestCase):
         self.assertTrue(password_errors("123"))
         self.assertTrue(password_errors("12345"))
         self.assertTrue(password_errors("abcd"))
+
+    def test_seller_password_hashing_keeps_legacy_support(self) -> None:
+        seller_hash = hash_seller_password(
+            "2026",
+            secret="secret",
+            seller_id=7,
+            salt=b"1234567890123456",
+        )
+        self.assertTrue(
+            verify_seller_password(
+                "2026",
+                seller_hash,
+                secret="secret",
+                seller_id=7,
+            )
+        )
+        self.assertFalse(
+            verify_seller_password(
+                "2027",
+                seller_hash,
+                secret="secret",
+                seller_id=7,
+            )
+        )
+        self.assertFalse(
+            verify_seller_password(
+                "2026",
+                seller_hash,
+                secret="secret",
+                seller_id=8,
+            )
+        )
+
+        legacy_hash = hash_password("4321", salt=b"1234567890123456")
+        self.assertTrue(
+            verify_seller_password(
+                "4321",
+                legacy_hash,
+                secret="secret",
+                seller_id=7,
+            )
+        )
 
 
     def test_repeated_login_failures_are_limited_temporarily(self) -> None:

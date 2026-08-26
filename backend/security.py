@@ -16,6 +16,8 @@ from typing import Any
 
 SESSION_TTL_SECONDS = 12 * 60 * 60
 PASSWORD_ITERATIONS = 210_000
+SELLER_HASH_ALGORITHM = "hmac_sha256"
+SELLER_HASH_VERSION = "v1"
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,62 @@ def verify_password(provided: str, stored_hash: str) -> bool:
         )
         return hmac.compare_digest(digest, _decode(encoded_digest))
     except (ValueError, TypeError, OSError, binascii.Error):
+        return False
+
+
+def hash_seller_password(
+    password: str,
+    *,
+    secret: str,
+    seller_id: int,
+    salt: bytes | None = None,
+) -> str:
+    """Genera un hash rápido y seguro para NIPs de vendedores.
+
+    Los NIPs son de 4 dígitos, así que la seguridad real viene del secreto de
+    servidor. Este formato evita cálculos pesados en runtimes serverless como
+    Cloudflare Workers, donde PBKDF2 con muchas iteraciones puede exceder CPU.
+    """
+
+    raw_salt = salt or os.urandom(16)
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        f"{int(seller_id)}:{_encode(raw_salt)}:{password}".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return (
+        f"{SELLER_HASH_ALGORITHM}${SELLER_HASH_VERSION}$"
+        f"{_encode(raw_salt)}${_encode(digest)}"
+    )
+
+
+def verify_seller_password(
+    provided: str,
+    stored_hash: str,
+    *,
+    secret: str,
+    seller_id: int,
+) -> bool:
+    """Valida hashes nuevos HMAC y conserva soporte para hashes PBKDF2 antiguos."""
+
+    try:
+        algorithm, version, encoded_salt, encoded_digest = stored_hash.split("$", 3)
+    except (ValueError, TypeError):
+        return verify_password(provided, stored_hash)
+
+    if algorithm != SELLER_HASH_ALGORITHM:
+        return verify_password(provided, stored_hash)
+    if version != SELLER_HASH_VERSION:
+        return False
+
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        f"{int(seller_id)}:{encoded_salt}:{provided}".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    try:
+        return hmac.compare_digest(expected, _decode(encoded_digest))
+    except binascii.Error:
         return False
 
 

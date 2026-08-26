@@ -12,7 +12,12 @@ from urllib.parse import quote
 
 from backend.config import Settings
 from backend.schemas import CreateClientRequest, CreateOrderRequest
-from backend.security import hash_password, password_errors, verify_password, verify_pin
+from backend.security import (
+    hash_seller_password,
+    password_errors,
+    verify_pin,
+    verify_seller_password,
+)
 from rapyvet.customers import alta_cliente_odoo, dominio_clientes_odoo
 from rapyvet.odoo_rpc import crear_proxy_odoo
 
@@ -370,7 +375,11 @@ class OdooService:
         record = {
             "seller_id": seller.id,
             "login": seller.login,
-            "password_hash": hash_password(password),
+            "password_hash": hash_seller_password(
+                password,
+                secret=self.settings.seller_temp_secret,
+                seller_id=seller.id,
+            ),
             "must_change_password": must_change_password,
             "updated_at": int(time.time()),
         }
@@ -391,7 +400,12 @@ class OdooService:
 
         record = self._read_seller_auth(seller.id, proxy=proxy)
         if record and record.get("password_hash"):
-            valid = verify_password(password, str(record["password_hash"]))
+            valid = verify_seller_password(
+                password,
+                str(record["password_hash"]),
+                secret=self.settings.seller_temp_secret,
+                seller_id=seller.id,
+            )
             must_change = bool(record.get("must_change_password"))
         else:
             valid = verify_pin(password, self._temporary_password(seller))
@@ -419,7 +433,12 @@ class OdooService:
         proxy = self._models()
         record = self._read_seller_auth(seller.id, proxy=proxy)
         if record and record.get("password_hash"):
-            valid = verify_password(current_password, str(record["password_hash"]))
+            valid = verify_seller_password(
+                current_password,
+                str(record["password_hash"]),
+                secret=self.settings.seller_temp_secret,
+                seller_id=seller.id,
+            )
         else:
             valid = verify_pin(current_password, self._temporary_password(seller))
         if not valid:
