@@ -23,6 +23,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   LogOut,
+  Menu,
   Minus,
   PackageSearch,
 
@@ -1668,10 +1669,10 @@ function BottomNav({
         aria-label="Más opciones"
       >
         <span>
-          <UserRound />
+          <Menu />
           {pendingCount > 0 && <b>{pendingCount}</b>}
         </span>
-        <small>Perfil</small>
+        <small>Menú</small>
       </button>
     </nav>
   );

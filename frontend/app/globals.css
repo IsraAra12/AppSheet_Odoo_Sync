@@ -1602,8 +1602,7 @@ textarea:focus { border-color: rgba(253, 170, 249, 0.38); box-shadow: 0 0 0 3px 
   .stepper { grid-template-columns: 38px 1fr 38px; }
   .stepper button { width: 38px; }
   .total-card { align-items: flex-start; flex-direction: column; }
-  .product-card { grid-template-columns: 92px minmax(0, 1fr); gap: 10px; }
-  .product-visual { min-height: 92px; }
+  .product-card { gap: 10px; }
   .product-card h2 { font-size: 15px; }
   .compact-add { font-size: 12px; }
   .floating-order-card { gap: 10px; }
