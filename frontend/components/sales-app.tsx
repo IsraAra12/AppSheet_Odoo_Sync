@@ -104,6 +104,7 @@ type Screen = "home" | "clients" | "products" | "cart" | "review" | "success" | 
 
 const DRAFT_KEY = "rapyvet_order_draft_v2";
 const CATALOG_KEY = "rapyvet_catalog_v2";
+const FIRST_USE_TUTORIAL_KEY = "rapyvet_first_use_tutorial_seen_v1";
 const VISIBLE_STEP = 30;
 
 const pageMotion = {
@@ -151,6 +152,10 @@ function productInitials(product: Product) {
 
 function firstName(name = "") {
   return name.trim().split(/\s+/)[0] || "equipo";
+}
+
+function tutorialSeenKey(sellerId?: number) {
+  return sellerId ? `${FIRST_USE_TUTORIAL_KEY}.${sellerId}` : FIRST_USE_TUTORIAL_KEY;
 }
 
 function DesktopPointerField() {
@@ -224,6 +229,272 @@ function EmptyState({ icon: Icon, title, body }: { icon: typeof Search; title: s
       <strong>{title}</strong>
       <span>{body}</span>
     </motion.div>
+  );
+}
+
+type TutorialStep = {
+  label: string;
+  title: string;
+  body: string;
+  icon: typeof Search;
+  bullets: string[];
+  target?: Screen;
+  visualItems: Array<{ icon: typeof Search; label: string }>;
+};
+
+function FirstUseTutorial({
+  open,
+  seller,
+  onDone,
+}: {
+  open: boolean;
+  seller?: Seller;
+  onDone: (target?: Screen) => void;
+}) {
+  const [step, setStep] = useState(0);
+  const sellerFirstName = firstName(seller?.name);
+  const steps: TutorialStep[] = useMemo(
+    () => [
+      {
+        label: "Guía rápida",
+        title: `Bienvenido, ${sellerFirstName}.`,
+        body: "Esta app está pensada para que captures pedidos en campo sin pelearte con Odoo ni con la señal.",
+        icon: Sparkles,
+        bullets: [
+          "Primero eliges o das de alta el cliente.",
+          "Después agregas productos al carrito.",
+          "Al final revisas, envías a Odoo y compartes por WhatsApp.",
+        ],
+        visualItems: [
+          { icon: UserRoundPlus, label: "Cliente" },
+          { icon: PackageSearch, label: "Productos" },
+          { icon: Send, label: "Enviar" },
+        ],
+      },
+      {
+        label: "Paso 1",
+        title: "Selecciona el cliente correcto.",
+        body: "Busca por nombre, correo o ciudad. Si el cliente todavía no existe, puedes crearlo desde el botón Nuevo.",
+        icon: UsersRound,
+        bullets: [
+          "Usa el buscador para encontrar clientes de Odoo.",
+          "El botón Nuevo crea el cliente con nombre, correo, dirección, CP y RFC opcional.",
+          "Al seleccionarlo, la app te lleva directo al catálogo.",
+        ],
+        visualItems: [
+          { icon: Search, label: "Buscar" },
+          { icon: UserRoundPlus, label: "Nuevo" },
+          { icon: Check, label: "Seleccionar" },
+        ],
+        target: "clients",
+      },
+      {
+        label: "Paso 2",
+        title: "Agrega productos sin perder el ritmo.",
+        body: "Escribe el medicamento, revisa precio y existencia, y toca Agregar. El carrito se conserva mientras sigues buscando.",
+        icon: PackageSearch,
+        bullets: [
+          "La búsqueda filtra productos mientras escribes.",
+          "Puedes agregar varias unidades desde el carrito.",
+          "Si aplica promoción, usa el botón de brillo para capturar gratis o combos.",
+        ],
+        visualItems: [
+          { icon: Search, label: "Medicamento" },
+          { icon: Plus, label: "Agregar" },
+          { icon: Sparkles, label: "Promo" },
+        ],
+        target: "products",
+      },
+      {
+        label: "Paso 3",
+        title: "Revisa antes de enviar a Odoo.",
+        body: "En el carrito confirma cantidades, precios y notas. Luego entra a Revisión para mandar el pedido.",
+        icon: ShoppingBag,
+        bullets: [
+          "Valida cantidades y productos antes de confirmar.",
+          "Agrega notas de entrega o comentarios especiales.",
+          "El envío genera folio y mensaje listo para WhatsApp.",
+        ],
+        visualItems: [
+          { icon: ShoppingBag, label: "Carrito" },
+          { icon: FileText, label: "Notas" },
+          { icon: Send, label: "Odoo" },
+        ],
+        target: "cart",
+      },
+      {
+        label: "Respaldo",
+        title: "Si falla la señal, no pierdes el pedido.",
+        body: "La Bandeja guarda pedidos pendientes y el Historial permite revisar lo que ya quedó registrado en Odoo.",
+        icon: Inbox,
+        bullets: [
+          "La Bandeja muestra pedidos pendientes de sincronizar.",
+          "Puedes reintentar envío cuando vuelva la conexión.",
+          "El Historial consulta los pedidos asignados a tu usuario.",
+        ],
+        visualItems: [
+          { icon: Inbox, label: "Bandeja" },
+          { icon: RefreshCw, label: "Reintentar" },
+          { icon: History, label: "Historial" },
+        ],
+        target: "clients",
+      },
+    ],
+    [sellerFirstName],
+  );
+  const current = steps[step];
+  const CurrentIcon = current.icon;
+  const isLast = step === steps.length - 1;
+
+  useEffect(() => {
+    if (open) setStep(0);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onDone();
+      if (event.key === "ArrowRight") setStep((value) => Math.min(value + 1, steps.length - 1));
+      if (event.key === "ArrowLeft") setStep((value) => Math.max(value - 1, 0));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onDone, open, steps.length]);
+
+  function goNext() {
+    if (isLast) {
+      onDone(current.target);
+      return;
+    }
+    setStep((value) => Math.min(value + 1, steps.length - 1));
+  }
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="tutorial-backdrop"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) onDone();
+          }}
+        >
+          <motion.section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="first-use-tutorial-title"
+            className="tutorial-sheet"
+            initial={{ opacity: 0, y: 28, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 18, scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 260, damping: 28 }}
+          >
+            <span className="tutorial-aura" aria-hidden="true" />
+            <div className="tutorial-header">
+              <Logo compact />
+              <span>Primer uso · {step + 1} de {steps.length}</span>
+              <button type="button" className="icon-button" onClick={() => onDone()} aria-label="Cerrar tutorial">
+                <X />
+              </button>
+            </div>
+
+            <div className="tutorial-progress" aria-hidden="true">
+              <motion.span
+                initial={false}
+                animate={{ width: `${((step + 1) / steps.length) * 100}%` }}
+              />
+            </div>
+
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={current.title}
+                className="tutorial-stage"
+                initial={{ opacity: 0, x: 24 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -18 }}
+                transition={{ type: "spring", stiffness: 280, damping: 28 }}
+              >
+                <div className="tutorial-visual" aria-hidden="true">
+                  <motion.div
+                    className="tutorial-icon"
+                    animate={{ y: [0, -5, 0], rotate: [0, -2, 2, 0] }}
+                    transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+                  >
+                    <CurrentIcon />
+                  </motion.div>
+                  <div className="tutorial-mini-flow">
+                    {current.visualItems.map((item, index) => {
+                      const ItemIcon = item.icon;
+                      return (
+                        <motion.div
+                          key={item.label}
+                          className="tutorial-mini-card"
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: index * 0.08 }}
+                        >
+                          <ItemIcon />
+                          <span>{item.label}</span>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="tutorial-copy">
+                  <span className="eyebrow">{current.label}</span>
+                  <h2 id="first-use-tutorial-title">{current.title}</h2>
+                  <p>{current.body}</p>
+                  <ul className="tutorial-bullets">
+                    {current.bullets.map((bullet) => (
+                      <li key={bullet}>
+                        <CircleCheck />
+                        <span>{bullet}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </motion.div>
+            </AnimatePresence>
+
+            <div className="tutorial-footer">
+              <div className="tutorial-dots" aria-label="Pasos del tutorial">
+                {steps.map((item, index) => (
+                  <button
+                    type="button"
+                    key={item.label}
+                    className={index === step ? "active" : ""}
+                    onClick={() => setStep(index)}
+                    aria-label={`Ir al paso ${index + 1}`}
+                  />
+                ))}
+              </div>
+              <div className="tutorial-actions">
+                <button type="button" className="button ghost" onClick={() => onDone()}>
+                  Saltar
+                </button>
+                {step > 0 && (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => setStep((value) => Math.max(value - 1, 0))}
+                  >
+                    <ArrowLeft />
+                    Atrás
+                  </button>
+                )}
+                <button type="button" className="button primary" onClick={goNext}>
+                  {isLast ? "Empezar pedido" : "Siguiente"}
+                  <ArrowRight />
+                </button>
+              </div>
+            </div>
+          </motion.section>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -1463,6 +1734,7 @@ function MoreOptionsDialog({
   onClose,
   onNavigate,
   onRefreshCatalog,
+  onTutorial,
   onLogout,
 }: {
   open: boolean;
@@ -1471,6 +1743,7 @@ function MoreOptionsDialog({
   onClose: () => void;
   onNavigate: (screen: Screen) => void;
   onRefreshCatalog: () => void;
+  onTutorial: () => void;
   onLogout: () => void;
 }) {
   return (
@@ -1578,6 +1851,24 @@ function MoreOptionsDialog({
                 <div className="more-menu-text">
                   <strong>Actualizar catálogo</strong>
                   <small>Recargar productos y clientes desde Odoo</small>
+                </div>
+                <ChevronRight size={18} className="more-arrow" />
+              </button>
+
+              <button
+                type="button"
+                className="more-menu-item"
+                onClick={() => {
+                  onClose();
+                  onTutorial();
+                }}
+              >
+                <span className="more-menu-icon">
+                  <ClipboardCheck size={22} />
+                </span>
+                <div className="more-menu-text">
+                  <strong>Tutorial de uso</strong>
+                  <small>Ver la guía rápida para tomar pedidos</small>
                 </div>
                 <ChevronRight size={18} className="more-arrow" />
               </button>
@@ -1746,6 +2037,7 @@ export function SalesApp() {
   const [orderResult, setOrderResult] = useState<OrderResult | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
 
 
@@ -1800,6 +2092,17 @@ export function SalesApp() {
     const timer = window.setTimeout(() => setToast(""), 2800);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (!hydrated || !authenticated || !catalog || !session || session.must_change_password) return;
+    try {
+      if (!localStorage.getItem(tutorialSeenKey(session.seller.id))) {
+        setTutorialOpen(true);
+      }
+    } catch {
+      setTutorialOpen(true);
+    }
+  }, [authenticated, catalog, hydrated, session]);
 
   useLayoutEffect(() => {
     if (mainRef.current) mainRef.current.scrollTop = 0;
@@ -1957,6 +2260,24 @@ export function SalesApp() {
     setAuthenticated(false);
   }
 
+  function finishTutorial(target?: Screen) {
+    try {
+      localStorage.setItem(tutorialSeenKey(session?.seller.id), "true");
+    } catch {
+      // El tutorial puede seguir funcionando aunque el navegador bloquee almacenamiento local.
+    }
+    setTutorialOpen(false);
+    setMoreMenuOpen(false);
+    if (target) {
+      navigate(target);
+    }
+  }
+
+  function openTutorial() {
+    setMoreMenuOpen(false);
+    setTutorialOpen(true);
+  }
+
   if (!hydrated) return <LoadingScreen />;
   if (!session || !hasSession()) {
     return <MotionConfig reducedMotion="user"><LoginScreen onReady={acceptSession} /></MotionConfig>;
@@ -2049,10 +2370,12 @@ export function SalesApp() {
           void loadCatalog(true);
           setToast("Catálogo actualizado desde Odoo");
         }}
+        onTutorial={openTutorial}
         onLogout={logout}
       />
       <NewClientDialog open={newClientOpen} busy={clientBusy} error={clientError} onClose={() => setNewClientOpen(false)} onSubmit={(data) => void submitNewClient(data)} />
       <PromoDialog product={promoProduct} onClose={() => setPromoProduct(null)} onAdd={addPromotion} />
+      <FirstUseTutorial open={tutorialOpen} seller={session.seller} onDone={finishTutorial} />
       <AnimatePresence>{toast && <motion.div className="toast" role="status" initial={{ opacity: 0, x: "-50%", y: 18, scale: 0.96 }} animate={{ opacity: 1, x: "-50%", y: 0, scale: 1 }} exit={{ opacity: 0, x: "-50%", y: 12 }}><Check size={17} /> {toast}</motion.div>}</AnimatePresence>
     </MotionConfig>
   );
