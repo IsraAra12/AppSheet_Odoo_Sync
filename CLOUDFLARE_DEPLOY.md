@@ -4,6 +4,7 @@
 
 - Frontend: Cloudflare Pages Free.
 - Backend/API: Cloudflare Workers Free con Python + FastAPI.
+- Claves de vendedores: Cloudflare KV Free, para no depender de permisos internos de Odoo SaaS.
 - Odoo: se mantiene como sistema principal de clientes, productos y pedidos.
 - WhatsApp: se genera desde la app como enlace, sin costo adicional.
 
@@ -59,6 +60,14 @@ CATALOG_CACHE_SECONDS=300
 CONFIRM_ORDERS=false
 ```
 
+Binding de KV necesario:
+
+```text
+RAPYVET_SELLER_AUTH
+```
+
+Este almacén guarda únicamente los NIPs/clave de vendedores con hash. Clientes, productos y pedidos siguen en Odoo.
+
 ## Flujo de salida a producción
 
 1. Publicar Worker.
@@ -79,3 +88,4 @@ CONFIRM_ORDERS=false
 - No usar Render para backend.
 - No agregar servicios con tarjeta o upgrades.
 - En Cloudflare, quedarse en Workers Free y Pages Free.
+- Mantener Cloudflare KV en Free; el uso esperado de vendedores está muy por debajo del límite gratuito.

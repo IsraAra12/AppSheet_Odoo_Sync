@@ -24,12 +24,17 @@ Estado actual actualizado:
   - `https://rapyvet-pedidos-api.angelauriazul25.workers.dev`
 - Frontend publicado:
   - `https://rapyvet-pedidos.pages.dev`
+- Corrección publicada para Odoo SaaS 19.3:
+  - Las claves/NIPs de vendedores ya no se guardan en `ir.config_parameter` de Odoo.
+  - Ahora se guardan con hash en Cloudflare KV mediante el binding `RAPYVET_SELLER_AUTH`.
+  - Esto corrige el error de primer inicio: “Odoo no pudo guardar la nueva clave”.
 - Secretos cargados al Worker desde `.env` sin imprimir valores.
 - Validaciones remotas realizadas:
   - `/health` del Worker: OK.
   - consulta segura de vendedores: OK, 4 vendedores.
   - login temporal por API: OK, devuelve sesión con cambio de NIP pendiente.
   - catálogo remoto con sesión firmada: OK, 321 clientes y 2,582 productos.
+  - cambio de NIP en producción con vendedor ficticio: OK, sin modificar vendedores reales.
 
 Por qué se hizo el cambio de hash:
 - Cloudflare Workers Free tiene límite de CPU bajo.
@@ -38,7 +43,7 @@ Por qué se hizo el cambio de hash:
 - Debe conservarse soporte para hashes PBKDF2 viejos durante transición.
 
 Siguiente paso inmediato:
-1. Hacer prueba real de cambio de NIP de un vendedor de prueba o vendedor autorizado.
+1. Hacer prueba real de cambio de NIP de un vendedor autorizado.
 2. Hacer prueba real de creación de pedido en Odoo con autorización explícita del usuario.
 3. Mantener endpoints compatibles con el frontend:
    - `GET /health`
@@ -63,6 +68,7 @@ Variables necesarias en Cloudflare Worker:
 - `APP_ACCESS_PIN`
 - `APP_SESSION_SECRET`
 - `APP_SELLER_TEMP_SECRET`
+- `RAPYVET_SELLER_AUTH` como binding de Cloudflare KV
 - `FRONTEND_ORIGINS`
 - `ODOO_TIMEOUT_SECONDS`
 - `CATALOG_CACHE_SECONDS`

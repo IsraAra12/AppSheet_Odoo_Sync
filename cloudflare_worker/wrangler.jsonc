@@ -9,5 +9,11 @@
     "ODOO_TIMEOUT_SECONDS": "30",
     "CATALOG_CACHE_SECONDS": "300",
     "CONFIRM_ORDERS": "false"
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "RAPYVET_SELLER_AUTH",
+      "id": "0312e53a9ae94aefa5980611aaa41976"
+    }
+  ]
 }

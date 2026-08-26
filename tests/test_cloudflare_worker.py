@@ -22,8 +22,19 @@ from rapyvet_api import (  # noqa: E402
 )
 
 
-class FakeCloudflareOdooService(AsyncOdooService):
+class FakeKV:
     def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def put(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+
+class FakeCloudflareOdooService(AsyncOdooService):
+    def __init__(self, seller_auth_store: Any | None = None) -> None:
         super().__init__(
             Settings(
                 odoo_url="https://odoo.example.com",
@@ -34,7 +45,8 @@ class FakeCloudflareOdooService(AsyncOdooService):
                 session_secret="x" * 32,
                 seller_temp_secret="temp-secret",
                 frontend_origins=("http://localhost:3000",),
-            )
+            ),
+            seller_auth_store=seller_auth_store,
         )
         self.created_values: dict[str, Any] | None = None
 
@@ -65,6 +77,8 @@ class FakeCloudflareOdooService(AsyncOdooService):
                     "amount_total": 116,
                 }
             ]
+        if model == "ir.config_parameter" and method == "set_param":
+            raise AssertionError("Cloudflare Worker should save seller keys in KV, not Odoo config.")
         raise AssertionError(f"Unexpected call: {model}.{method}")
 
 
@@ -119,6 +133,31 @@ class CloudflareWorkerTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_seller_password_change_uses_kv_not_odoo_config(self) -> None:
+        kv = FakeKV()
+        self.service = FakeCloudflareOdooService(seller_auth_store=kv)
+        seller = Seller(id=7, name="Robert Lucio", login="ventas@example.com")
+
+        await self.service._write_seller_auth(
+            seller,
+            "1357",
+            must_change_password=False,
+        )
+
+        key = "rapyvet.pedidos.seller_auth.v1.7"
+        self.assertIn(key, kv.values)
+        record = await self.service._read_seller_auth(seller.id)
+        assert record is not None
+        self.assertFalse(record["must_change_password"])
+        self.assertTrue(
+            verify_seller_password(
+                "1357",
+                record["password_hash"],
+                secret=self.service.settings.seller_temp_secret,
+                seller_id=seller.id,
+            )
+        )
+
     def test_catalog_domain_includes_new_main_contacts(self) -> None:
         domain = dominio_clientes_odoo()
         self.assertIn(("customer_rank", ">", 0), domain)
@@ -143,4 +182,3 @@ class CloudflareWorkerTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

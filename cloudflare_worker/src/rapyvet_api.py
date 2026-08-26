@@ -610,8 +610,9 @@ def whatsapp_url(message: str) -> str:
 
 
 class AsyncOdooService:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, seller_auth_store: Any | None = None) -> None:
         self.settings = settings
+        self.seller_auth_store = seller_auth_store
         self._uid: int | None = None
         self._catalog: tuple[float, dict[str, Any]] | None = None
         self._local_seller_auth: dict[int, dict[str, Any]] = {}
@@ -766,6 +767,37 @@ class AsyncOdooService:
     def _seller_auth_key(self, seller_id: int) -> str:
         return f"{SELLER_AUTH_KEY_PREFIX}.{int(seller_id)}"
 
+    async def _read_seller_auth_from_kv(self, seller_id: int) -> dict[str, Any] | None:
+        if self.seller_auth_store is None:
+            return None
+        try:
+            raw = await self.seller_auth_store.get(self._seller_auth_key(seller_id))
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            data = json.loads(str(raw))
+        except json.JSONDecodeError:
+            return None
+        if isinstance(data, dict):
+            self._local_seller_auth[seller_id] = data
+            return data
+        return None
+
+    async def _write_seller_auth_to_kv(
+        self,
+        seller: Seller,
+        record: dict[str, Any],
+    ) -> bool:
+        if self.seller_auth_store is None:
+            return False
+        await self.seller_auth_store.put(
+            self._seller_auth_key(seller.id),
+            json.dumps(record, separators=(",", ":")),
+        )
+        return True
+
     async def _seller_group_ids(self) -> list[int]:
         group_ids: list[int] = []
         for xmlid in SELLER_GROUP_XMLIDS:
@@ -871,6 +903,11 @@ class AsyncOdooService:
     async def _read_seller_auth(self, seller_id: int) -> dict[str, Any] | None:
         if seller_id in self._local_seller_auth:
             return self._local_seller_auth[seller_id]
+
+        kv_record = await self._read_seller_auth_from_kv(seller_id)
+        if kv_record:
+            return kv_record
+
         try:
             raw = await self._call(
                 "ir.config_parameter",
@@ -885,7 +922,10 @@ class AsyncOdooService:
             data = json.loads(str(raw))
         except json.JSONDecodeError:
             return None
-        return data if isinstance(data, dict) else None
+        if isinstance(data, dict):
+            self._local_seller_auth[seller_id] = data
+            return data
+        return None
 
     async def _write_seller_auth(
         self,
@@ -905,11 +945,12 @@ class AsyncOdooService:
             "must_change_password": must_change_password,
             "updated_at": int(time.time()),
         }
-        await self._call(
-            "ir.config_parameter",
-            "set_param",
-            [self._seller_auth_key(seller.id), json.dumps(record, separators=(",", ":"))],
-        )
+        if not await self._write_seller_auth_to_kv(seller, record):
+            await self._call(
+                "ir.config_parameter",
+                "set_param",
+                [self._seller_auth_key(seller.id), json.dumps(record, separators=(",", ":"))],
+            )
         self._local_seller_auth[seller.id] = record
 
     async def authenticate_seller(self, login: str, password: str) -> SellerAuthResult:
@@ -1296,12 +1337,28 @@ _service_cache: dict[str, AsyncOdooService] = {}
 _login_throttle = LoginThrottle()
 
 
-def service_for(settings: Settings) -> AsyncOdooService:
+def seller_auth_store_from_request(request: Request) -> Any | None:
+    env = request.scope.get("env")
+    if env is None:
+        return None
+    try:
+        return getattr(env, "RAPYVET_SELLER_AUTH")
+    except Exception:
+        pass
+    try:
+        return env["RAPYVET_SELLER_AUTH"]
+    except Exception:
+        return None
+
+
+def service_for(settings: Settings, seller_auth_store: Any | None = None) -> AsyncOdooService:
     key = settings.cache_key()
     existing = _service_cache.get(key)
     if existing:
+        if existing.seller_auth_store is None and seller_auth_store is not None:
+            existing.seller_auth_store = seller_auth_store
         return existing
-    service = AsyncOdooService(settings)
+    service = AsyncOdooService(settings, seller_auth_store=seller_auth_store)
     _service_cache[key] = service
     return service
 
@@ -1444,7 +1501,10 @@ async def create_session(payload: SessionRequest, request: Request) -> SessionRe
             detail="Demasiados intentos. Espera unos minutos antes de volver a intentar.",
         )
     try:
-        result = await service_for(settings).authenticate_seller(payload.login, payload.password)
+        result = await service_for(settings, seller_auth_store_from_request(request)).authenticate_seller(
+            payload.login,
+            payload.password,
+        )
     except PermissionError as error:
         _login_throttle.failure(source)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error
@@ -1457,10 +1517,11 @@ async def create_session(payload: SessionRequest, request: Request) -> SessionRe
 @app.post("/api/session/change-password", response_model=SessionResponse)
 async def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     session: AuthenticatedSession = Depends(require_password_change_session),
 ) -> SessionResponse:
     try:
-        result = await service_for(session.settings).change_seller_password(
+        result = await service_for(session.settings, seller_auth_store_from_request(request)).change_seller_password(
             session.seller,
             payload.current_password,
             payload.new_password,
@@ -1471,7 +1532,10 @@ async def change_password(
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except Exception as error:
-        raise HTTPException(status_code=502, detail="Odoo no pudo guardar la nueva clave.") from error
+        raise HTTPException(
+            status_code=502,
+            detail="No pudimos guardar la nueva clave. Inténtalo de nuevo.",
+        ) from error
 
 
 @app.post("/api/admin/sellers/temporary-keys", response_model=TemporarySellerKeysResponse)
@@ -1483,7 +1547,9 @@ async def temporary_seller_keys(
     if not verify_pin(payload.admin_pin, settings.access_pin):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Clave de administrador incorrecta.")
     try:
-        keys = await service_for(settings).temporary_seller_keys(reset_existing=payload.reset_existing)
+        keys = await service_for(settings, seller_auth_store_from_request(request)).temporary_seller_keys(
+            reset_existing=payload.reset_existing
+        )
         return {
             "sellers": [
                 {
@@ -1502,11 +1568,12 @@ async def temporary_seller_keys(
 
 @app.get("/api/catalog", response_model=CatalogResponse)
 async def catalog(
+    request: Request,
     refresh: bool = Query(default=False),
     session: AuthenticatedSession = Depends(require_session),
 ) -> dict[str, object]:
     try:
-        return await service_for(session.settings).catalog(force=refresh)
+        return await service_for(session.settings, seller_auth_store_from_request(request)).catalog(force=refresh)
     except Exception as error:
         raise HTTPException(status_code=502, detail="No fue posible consultar Odoo.") from error
 
@@ -1514,10 +1581,11 @@ async def catalog(
 @app.post("/api/clients", response_model=CreatedClient)
 async def create_client(
     payload: CreateClientRequest,
+    request: Request,
     session: AuthenticatedSession = Depends(require_session),
 ) -> dict[str, object]:
     try:
-        return await service_for(session.settings).create_client(payload)
+        return await service_for(session.settings, seller_auth_store_from_request(request)).create_client(payload)
     except ValidacionClienteError as error:
         raise HTTPException(status_code=422, detail=error.errores) from error
     except ConflictoClienteError as error:
@@ -1529,9 +1597,10 @@ async def create_client(
 @app.post("/api/orders", response_model=OrderResponse)
 async def create_order(
     payload: CreateOrderRequest,
+    request: Request,
     session: AuthenticatedSession = Depends(require_session),
 ) -> OrderResponse:
-    svc = service_for(session.settings)
+    svc = service_for(session.settings, seller_auth_store_from_request(request))
     try:
         customer_name, product_names = await svc.names_for_order(payload)
         result = await svc.create_order(payload, seller=session.seller)
@@ -1566,15 +1635,18 @@ async def create_order(
 
 @app.get("/api/orders/history", response_model=SellerOrdersResponse)
 async def order_history(
+    request: Request,
     limit: int = Query(default=30, ge=1, le=100),
     session: AuthenticatedSession = Depends(require_session),
 ) -> dict[str, object]:
     try:
-        orders = await service_for(session.settings).list_seller_orders(session.seller.id, limit=limit)
+        orders = await service_for(session.settings, seller_auth_store_from_request(request)).list_seller_orders(
+            session.seller.id,
+            limit=limit,
+        )
         return {"orders": orders, "total": len(orders)}
     except Exception as error:
         raise HTTPException(
             status_code=502,
             detail="No fue posible consultar el historial de pedidos en Odoo.",
         ) from error
-
