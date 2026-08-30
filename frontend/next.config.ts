@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   images: { unoptimized: true },
   poweredByHeader: false,
   devIndicators: false,
+  allowedDevOrigins: ["127.0.0.1", "::1"],
 };
 
 

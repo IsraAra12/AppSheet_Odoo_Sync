@@ -88,6 +88,58 @@ export type SellerOrderSummary = {
   client_order_ref: string;
 };
 
+export type CustomerStatementLine = {
+  id: number;
+  date: string;
+  due_date: string;
+  document: string;
+  label: string;
+  reference: string;
+  open_amount: number;
+  original_amount: number;
+  currency: string;
+  days_overdue: number;
+  status: string;
+};
+
+export type CustomerStatement = {
+  customer: Client;
+  generated_at: number;
+  total_due: number;
+  overdue_due: number;
+  current_due: number;
+  credit_balance: number;
+  lines: CustomerStatementLine[];
+};
+
+export type OrderDetailLine = {
+  id: number;
+  product_id: number;
+  code: string;
+  name: string;
+  quantity: number;
+  unit_price: number;
+  subtotal: number;
+};
+
+export type OrderDetail = {
+  id: number;
+  folio: string;
+  customer_id: number;
+  customer_name: string;
+  amount_total: number;
+  subtotal: number;
+  tax: number;
+  state: string;
+  state_label: string;
+  editable: boolean;
+  editable_reason: string;
+  note: string;
+  date_order: string;
+  client_order_ref: string;
+  lines: OrderDetailLine[];
+};
+
 export type OutboxStatus = "pending" | "sending" | "confirmed" | "attention";
 
 export type OutboxItem = {
@@ -105,4 +157,3 @@ export type OutboxItem = {
   error_message?: string;
   result?: OrderResult;
 };
-

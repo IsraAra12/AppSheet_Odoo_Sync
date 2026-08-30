@@ -1,7 +1,9 @@
 import type {
   Catalog,
   Client,
+  CustomerStatement,
   OrderResult,
+  OrderDetail,
   SellerOrderSummary,
   SessionInfo,
   TemporarySellerKey,
@@ -135,3 +137,21 @@ export function getOrderHistory(limit = 30) {
   );
 }
 
+export function getCustomerStatement(customerId: number) {
+  return request<CustomerStatement>(`/api/clients/${customerId}/statement`);
+}
+
+export function getOrderDetail(orderId: number) {
+  return request<OrderDetail>(`/api/orders/${orderId}`);
+}
+
+export function updateOrder(orderId: number, data: {
+  customer_id: number;
+  lines: { product_id: number; quantity: number; unit_price: number }[];
+  note: string;
+}) {
+  return request<OrderResult>(`/api/orders/${orderId}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}

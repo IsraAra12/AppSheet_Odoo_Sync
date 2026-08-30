@@ -13,6 +13,7 @@ import xmlrpc.client
 from collections import defaultdict, deque
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 from urllib.parse import quote
 
@@ -37,8 +38,33 @@ STATE_LABELS: dict[str, str] = {
     "done": "Bloqueado / Entregado",
     "cancel": "Cancelado",
 }
+EDITABLE_ORDER_STATES = {"draft", "sent"}
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 RFC_RE = re.compile(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$")
+
+
+def _many2one_id(value: Any) -> int:
+    return int(value[0]) if isinstance(value, (list, tuple)) and value else 0
+
+
+def _many2one_name(value: Any, fallback: str = "") -> str:
+    return str(value[1]) if isinstance(value, (list, tuple)) and len(value) > 1 else fallback
+
+
+def _parse_odoo_date(value: Any) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value).split(" ", 1)[0])
+    except ValueError:
+        return None
+
+
+def _days_overdue(value: Any) -> int:
+    due_date = _parse_odoo_date(value)
+    if not due_date:
+        return 0
+    return max(0, (date.today() - due_date).days)
 
 
 class ConfigurationError(RuntimeError):
@@ -157,6 +183,17 @@ class CreateOrderRequest(BaseModel):
         pattern=r"^RV-[a-zA-Z0-9-]{8,36}$",
         max_length=40,
     )
+
+    @field_validator("note")
+    @classmethod
+    def clean_note(cls, value: str) -> str:
+        return value.strip()
+
+
+class UpdateOrderRequest(BaseModel):
+    customer_id: int = Field(gt=0)
+    lines: list[OrderLine] = Field(min_length=1, max_length=100)
+    note: str = Field(default="", max_length=2000)
 
     @field_validator("note")
     @classmethod
@@ -589,7 +626,7 @@ def _client_result(record: dict[str, Any], *, created: bool) -> dict[str, Any]:
 
 def whatsapp_summary(
     customer_name: str,
-    request: CreateOrderRequest,
+    request: CreateOrderRequest | UpdateOrderRequest,
     products: dict[int, str],
     *,
     seller_name: str = "",
@@ -1167,7 +1204,7 @@ class AsyncOdooService:
             recovered=recovered,
         )
 
-    async def names_for_order(self, request: CreateOrderRequest) -> tuple[str, dict[int, str]]:
+    async def names_for_order(self, request: CreateOrderRequest | UpdateOrderRequest) -> tuple[str, dict[int, str]]:
         client_records = await self._call(
             "res.partner",
             "read",
@@ -1332,6 +1369,199 @@ class AsyncOdooService:
             )
         return orders
 
+    async def _customer_record(self, customer_id: int) -> dict[str, Any]:
+        records = await self._call(
+            "res.partner",
+            "search_read",
+            [[("id", "=", int(customer_id)), ("active", "=", True)]],
+            {
+                "fields": [
+                    "id", "name", "email", "phone", "street", "city", "zip", "vat",
+                    "commercial_partner_id",
+                ],
+                "limit": 1,
+            },
+        )
+        if not records:
+            raise ValueError("El cliente ya no está disponible en Odoo.")
+        return dict(records[0])
+
+    async def _validate_products(self, request: CreateOrderRequest | UpdateOrderRequest) -> None:
+        product_ids = sorted({line.product_id for line in request.lines})
+        available = await self._call(
+            "product.product",
+            "search_read",
+            [[("id", "in", product_ids), ("active", "=", True), ("sale_ok", "=", True)]],
+            {"fields": ["id"]},
+        )
+        available_ids = {int(item["id"]) for item in available}
+        if any(product_id not in available_ids for product_id in product_ids):
+            raise ValueError("Uno o más productos ya no están disponibles. Actualiza el catálogo.")
+
+    @staticmethod
+    def _order_lines(request: CreateOrderRequest | UpdateOrderRequest) -> list[tuple[int, int, dict[str, Any]]]:
+        return [
+            (0, 0, {
+                "product_id": line.product_id,
+                "product_uom_qty": line.quantity,
+                "price_unit": line.unit_price,
+            })
+            for line in request.lines
+        ]
+
+    async def customer_statement(self, customer_id: int) -> dict[str, Any]:
+        customer_record = await self._customer_record(customer_id)
+        root_partner_id = _many2one_id(customer_record.get("commercial_partner_id")) or int(customer_id)
+        records = await self._call(
+            "account.move.line",
+            "search_read",
+            [[
+                ("partner_id", "child_of", root_partner_id),
+                ("parent_state", "=", "posted"),
+                ("reconciled", "=", False),
+                ("account_id.account_type", "=", "asset_receivable"),
+                ("amount_residual", "!=", 0),
+            ]],
+            {
+                "fields": [
+                    "id", "date", "invoice_date", "date_maturity", "move_id", "move_name",
+                    "name", "ref", "account_id", "amount_residual", "amount_residual_currency",
+                    "debit", "credit", "balance", "currency_id", "company_currency_id",
+                ],
+                "order": "date_maturity asc, date asc, id asc",
+                "limit": 200,
+            },
+        )
+        lines: list[dict[str, Any]] = []
+        total_due = 0.0
+        overdue_due = 0.0
+        credit_balance = 0.0
+        for item in records:
+            residual_company = float(item.get("amount_residual") or 0.0)
+            residual = (
+                float(item.get("amount_residual_currency") or residual_company)
+                if _many2one_id(item.get("currency_id"))
+                else residual_company
+            )
+            original = abs(float(item.get("debit") or 0.0) - float(item.get("credit") or 0.0))
+            if not original:
+                original = abs(float(item.get("balance") or 0.0))
+            due_date = str(item.get("date_maturity") or item.get("invoice_date") or item.get("date") or "")
+            days_overdue = _days_overdue(due_date) if residual > 0 else 0
+            if residual > 0:
+                total_due += residual
+                if days_overdue:
+                    overdue_due += residual
+                line_status = "Vencido" if days_overdue else "Vigente"
+            else:
+                credit_balance += abs(residual)
+                line_status = "A favor"
+            lines.append({
+                "id": int(item["id"]),
+                "date": str(item.get("date") or item.get("invoice_date") or ""),
+                "due_date": due_date,
+                "document": _many2one_name(item.get("move_id")) or str(item.get("move_name") or ""),
+                "label": str(item.get("name") or "Movimiento"),
+                "reference": str(item.get("ref") or ""),
+                "open_amount": residual,
+                "original_amount": original,
+                "currency": _many2one_name(item.get("currency_id")) or _many2one_name(item.get("company_currency_id")) or "MXN",
+                "days_overdue": days_overdue,
+                "status": line_status,
+            })
+        customer = {
+            "id": int(customer_record["id"]),
+            "name": str(customer_record.get("name") or "Cliente"),
+            "email": str(customer_record.get("email") or ""),
+            "phone": str(customer_record.get("phone") or ""),
+            "street": str(customer_record.get("street") or ""),
+            "city": str(customer_record.get("city") or ""),
+            "postal_code": str(customer_record.get("zip") or ""),
+            "vat": str(customer_record.get("vat") or ""),
+        }
+        return {
+            "customer": customer,
+            "generated_at": int(time.time()),
+            "total_due": total_due,
+            "overdue_due": overdue_due,
+            "current_due": max(0.0, total_due - overdue_due),
+            "credit_balance": credit_balance,
+            "lines": lines,
+        }
+
+    async def order_detail(self, order_id: int, *, seller: Seller) -> dict[str, Any]:
+        records = await self._call(
+            "sale.order",
+            "search_read",
+            [[("id", "=", int(order_id)), ("user_id", "=", seller.id)]],
+            {
+                "fields": ["id", "name", "partner_id", "amount_total", "amount_untaxed", "amount_tax", "state", "note", "date_order", "client_order_ref", "order_line"],
+                "limit": 1,
+            },
+        )
+        if not records:
+            raise ValueError("No encontramos el pedido o no pertenece a tu usuario.")
+        record = dict(records[0])
+        state = str(record.get("state") or "draft")
+        line_ids = [_many2one_id(value) or int(value) for value in (record.get("order_line") or [])]
+        raw_lines = await self._call(
+            "sale.order.line",
+            "read",
+            [line_ids],
+            {"fields": ["id", "product_id", "name", "product_uom_qty", "price_unit", "price_subtotal", "display_type"]},
+        ) if line_ids else []
+        product_ids = sorted({_many2one_id(line.get("product_id")) for line in raw_lines if _many2one_id(line.get("product_id"))})
+        product_records = await self._call("product.product", "read", [product_ids], {"fields": ["id", "default_code"]}) if product_ids else []
+        code_by_id = {int(item["id"]): str(item.get("default_code") or "") for item in product_records}
+        lines = []
+        for line in raw_lines:
+            if line.get("display_type"):
+                continue
+            product_id = _many2one_id(line.get("product_id"))
+            lines.append({
+                "id": int(line["id"]), "product_id": product_id, "code": code_by_id.get(product_id, ""),
+                "name": str(line.get("name") or "Producto"), "quantity": float(line.get("product_uom_qty") or 0),
+                "unit_price": float(line.get("price_unit") or 0), "subtotal": float(line.get("price_subtotal") or 0),
+            })
+        partner = record.get("partner_id")
+        return {
+            "id": int(record["id"]), "folio": str(record.get("name") or f"SO-{record['id']}"),
+            "customer_id": _many2one_id(partner), "customer_name": _many2one_name(partner, "Cliente"),
+            "amount_total": float(record.get("amount_total") or 0), "subtotal": float(record.get("amount_untaxed") or 0),
+            "tax": float(record.get("amount_tax") or 0), "state": state,
+            "state_label": STATE_LABELS.get(state, state.capitalize()), "editable": state in EDITABLE_ORDER_STATES,
+            "editable_reason": "" if state in EDITABLE_ORDER_STATES else "Odoo ya no permite editar este pedido porque está confirmado, entregado o cancelado.",
+            "note": str(record.get("note") or ""), "date_order": str(record.get("date_order") or ""),
+            "client_order_ref": str(record.get("client_order_ref") or ""), "lines": lines,
+        }
+
+    async def update_order(self, order_id: int, request: UpdateOrderRequest, *, seller: Seller) -> OrderResult:
+        records = await self._call(
+            "sale.order", "search_read",
+            [[("id", "=", int(order_id)), ("user_id", "=", seller.id)]],
+            {"fields": ["id", "state"], "limit": 1},
+        )
+        if not records:
+            raise ValueError("No encontramos el pedido o no pertenece a tu usuario.")
+        state = str(records[0].get("state") or "draft")
+        if state not in EDITABLE_ORDER_STATES:
+            raise ValueError("Este pedido ya está confirmado o cerrado y no se puede editar desde la app.")
+        await self._customer_record(request.customer_id)
+        await self._validate_products(request)
+        await self._call(
+            "sale.order",
+            "write",
+            [[int(order_id)], {
+                "partner_id": request.customer_id,
+                "order_line": [(5, 0, 0), *self._order_lines(request)],
+                "note": request.note or False,
+            }],
+        )
+        fields = ["id", "name", "state", "amount_untaxed", "amount_tax", "amount_total"]
+        updated = await self._call("sale.order", "read", [[int(order_id)]], {"fields": fields})
+        record = dict(updated[0]) if updated else {"id": order_id, "state": state}
+        return self._from_record(record, recovered=False, status_override="Pedido actualizado")
+
 
 _service_cache: dict[str, AsyncOdooService] = {}
 _login_throttle = LoginThrottle()
@@ -1410,7 +1640,7 @@ async def cors_middleware(request: Request, call_next):
     if origin:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
-        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,PATCH,OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization,Content-Type"
         response.headers["Access-Control-Max-Age"] = "86400"
     return response
@@ -1650,3 +1880,54 @@ async def order_history(
             status_code=502,
             detail="No fue posible consultar el historial de pedidos en Odoo.",
         ) from error
+
+
+@app.get("/api/clients/{customer_id}/statement")
+async def customer_statement(
+    customer_id: int,
+    request: Request,
+    session: AuthenticatedSession = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return await service_for(session.settings, seller_auth_store_from_request(request)).customer_statement(customer_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="No fue posible consultar el estado de cuenta en Odoo.") from error
+
+
+@app.get("/api/orders/{order_id}")
+async def order_detail(
+    order_id: int,
+    request: Request,
+    session: AuthenticatedSession = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return await service_for(session.settings, seller_auth_store_from_request(request)).order_detail(order_id, seller=session.seller)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="No fue posible consultar el pedido en Odoo.") from error
+
+
+@app.patch("/api/orders/{order_id}", response_model=OrderResponse)
+async def update_order(
+    order_id: int,
+    payload: UpdateOrderRequest,
+    request: Request,
+    session: AuthenticatedSession = Depends(require_session),
+) -> OrderResponse:
+    svc = service_for(session.settings, seller_auth_store_from_request(request))
+    try:
+        customer_name, product_names = await svc.names_for_order(payload)
+        result = await svc.update_order(order_id, payload, seller=session.seller)
+        message = whatsapp_summary(customer_name, payload, product_names, seller_name=session.seller.name)
+        return OrderResponse(
+            id=result.id, folio=result.folio, status=result.status, subtotal=result.subtotal,
+            tax=result.tax, total=result.total, recovered=result.recovered,
+            whatsapp_message=message, whatsapp_url=whatsapp_url(message),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail="Odoo no pudo actualizar el pedido. El pedido original no se confirmó ni se aplicaron pagos.") from error

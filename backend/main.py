@@ -16,7 +16,9 @@ from backend.schemas import (
     ChangePasswordRequest,
     CreateClientRequest,
     CreateOrderRequest,
+    CustomerStatementResponse,
     CreatedClient,
+    OrderDetailResponse,
     OrderResponse,
     Seller,
     SellerOrdersResponse,
@@ -25,6 +27,7 @@ from backend.schemas import (
     SessionResponse,
     TemporarySellerKeysRequest,
     TemporarySellerKeysResponse,
+    UpdateOrderRequest,
 )
 from backend.security import (
     SESSION_TTL_SECONDS,
@@ -69,7 +72,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(),
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -300,3 +303,89 @@ def order_history(
             detail="No fue posible consultar el historial de pedidos en Odoo.",
         ) from error
 
+
+@app.get(
+    "/api/clients/{customer_id}/statement",
+    response_model=CustomerStatementResponse,
+)
+def customer_statement(
+    customer_id: int,
+    _session: AuthenticatedSession = Depends(require_session),
+) -> dict[str, object]:
+    try:
+        return service().customer_statement(customer_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("No fue posible consultar el estado de cuenta")
+        raise HTTPException(
+            status_code=502,
+            detail="No fue posible consultar el estado de cuenta en Odoo.",
+        ) from error
+
+
+@app.get(
+    "/api/orders/{order_id}",
+    response_model=OrderDetailResponse,
+)
+def order_detail(
+    order_id: int,
+    session: AuthenticatedSession = Depends(require_session),
+) -> dict[str, object]:
+    try:
+        return service().order_detail(order_id, seller=session.seller)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("No fue posible consultar el detalle del pedido")
+        raise HTTPException(
+            status_code=502,
+            detail="No fue posible consultar el pedido en Odoo.",
+        ) from error
+
+
+@app.patch(
+    "/api/orders/{order_id}",
+    response_model=OrderResponse,
+)
+def update_order(
+    order_id: int,
+    request: UpdateOrderRequest,
+    session: AuthenticatedSession = Depends(require_session),
+) -> OrderResponse:
+    try:
+        catalog_data = service().catalog()
+        client_names = {
+            int(item["id"]): str(item["name"])
+            for item in catalog_data["clients"]
+        }
+        product_names = {
+            int(item["id"]): str(item["name"])
+            for item in catalog_data["products"]
+        }
+        result = service().update_order(order_id, request, seller=session.seller)
+        message = whatsapp_summary(
+            client_names.get(request.customer_id, "Cliente"),
+            request,
+            product_names,
+            seller_name=session.seller.name,
+        )
+        return OrderResponse(
+            id=result.id,
+            folio=result.folio,
+            status=result.status,
+            subtotal=result.subtotal,
+            tax=result.tax,
+            total=result.total,
+            recovered=result.recovered,
+            whatsapp_message=message,
+            whatsapp_url=whatsapp_url(message),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("No fue posible actualizar el pedido")
+        raise HTTPException(
+            status_code=502,
+            detail="Odoo no pudo actualizar el pedido. El pedido original no se confirmó ni se aplicaron pagos.",
+        ) from error

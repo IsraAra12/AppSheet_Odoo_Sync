@@ -109,6 +109,17 @@ class CreateOrderRequest(BaseModel):
         return value.strip()
 
 
+class UpdateOrderRequest(BaseModel):
+    customer_id: int = Field(gt=0)
+    lines: list[OrderLine] = Field(min_length=1, max_length=100)
+    note: str = Field(default="", max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def clean_note(cls, value: str) -> str:
+        return value.strip()
+
+
 class OrderResponse(BaseModel):
     id: int
     folio: str
@@ -137,3 +148,54 @@ class SellerOrdersResponse(BaseModel):
     orders: list[SellerOrderSummary]
     total: int
 
+
+class CustomerStatementLine(BaseModel):
+    id: int
+    date: str = ""
+    due_date: str = ""
+    document: str = ""
+    label: str = ""
+    reference: str = ""
+    open_amount: float
+    original_amount: float
+    currency: str = "MXN"
+    days_overdue: int = 0
+    status: str
+
+
+class CustomerStatementResponse(BaseModel):
+    customer: Client
+    generated_at: int
+    total_due: float
+    overdue_due: float
+    current_due: float
+    credit_balance: float
+    lines: list[CustomerStatementLine]
+
+
+class OrderDetailLine(BaseModel):
+    id: int
+    product_id: int
+    code: str = ""
+    name: str
+    quantity: float
+    unit_price: float
+    subtotal: float
+
+
+class OrderDetailResponse(BaseModel):
+    id: int
+    folio: str
+    customer_id: int
+    customer_name: str
+    amount_total: float
+    subtotal: float
+    tax: float
+    state: str
+    state_label: str
+    editable: bool
+    editable_reason: str = ""
+    note: str = ""
+    date_order: str = ""
+    client_order_ref: str = ""
+    lines: list[OrderDetailLine]

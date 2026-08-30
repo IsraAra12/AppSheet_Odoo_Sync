@@ -14,3 +14,6 @@ frontend/.next/
 frontend/out/
 frontend/.env.local
 frontend/*.tsbuildinfo
+output/
+tmp/
+take_screenshot.py

@@ -71,10 +71,13 @@ import {
   createOrder,
   generateTemporarySellerKeys,
   getCatalog,
+  getCustomerStatement,
+  getOrderDetail,
   getOrderHistory,
   getStoredSession,
   hasSession,
   login,
+  updateOrder,
 } from "@/lib/api";
 import {
   clearConfirmedOutbox,
@@ -91,8 +94,10 @@ import type {
   CartLine,
   Catalog,
   Client,
+  CustomerStatement,
   Draft,
   OrderResult,
+  OrderDetail,
   OutboxItem,
   Product,
   Seller,
@@ -101,7 +106,7 @@ import type {
   TemporarySellerKey,
 } from "@/lib/types";
 
-type Screen = "home" | "clients" | "products" | "cart" | "review" | "success" | "history" | "outbox";
+type Screen = "home" | "clients" | "products" | "cart" | "review" | "success" | "history" | "outbox" | "statement" | "orderEdit";
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -1054,6 +1059,7 @@ function HomeScreen({
   onCart,
   onHistory,
   onOutbox,
+  onStatement,
 }: {
   customer?: Client;
   seller?: Seller;
@@ -1064,6 +1070,7 @@ function HomeScreen({
   onCart: () => void;
   onHistory: () => void;
   onOutbox: () => void;
+  onStatement?: () => void;
 }) {
   const units = cart.reduce((sum, line) => sum + line.quantity, 0);
   const total = cart.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
@@ -1114,6 +1121,14 @@ function HomeScreen({
           <strong>Mis pedidos</strong>
           <span className="text-link">Consultar folios <ChevronRight size={15} /></span>
         </button>
+        {customer && onStatement && (
+          <button type="button" className="summary-card" onClick={onStatement}>
+            <span className="summary-icon"><FileText /></span>
+            <small>Cuenta del cliente</small>
+            <strong>Estado de cuenta</strong>
+            <span className="text-link">Ver saldos abiertos <ChevronRight size={15} /></span>
+          </button>
+        )}
       </section>
 
       <section className="flow-card">
@@ -1139,11 +1154,13 @@ function ClientScreen({
   selectedId,
   onSelect,
   onNew,
+  onStatement,
 }: {
   clients: Client[];
   selectedId: number | null;
   onSelect: (client: Client) => void;
   onNew: () => void;
+  onStatement: (client: Client) => void;
 }) {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -1177,21 +1194,24 @@ function ClientScreen({
       <motion.div className="client-list" layout>
         <AnimatePresence initial={false} mode="popLayout">
           {filtered.slice(0, 100).map((client) => (
-            <motion.button
+            <motion.article
               layout="position"
-              type="button"
               className={`client-row ${selectedId === client.id ? "selected" : ""}`}
               key={client.id}
-              onClick={() => onSelect(client)}
               initial={{ opacity: 0, scale: 0.99 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.99 }}
               transition={{ duration: 0.16 }}
             >
-              <span className="client-avatar">{client.name.slice(0, 2).toUpperCase()}</span>
-              <span className="client-copy"><strong>{client.name}</strong><small>{[client.city, client.email].filter(Boolean).join(" · ") || "Sin datos adicionales"}</small></span>
-              {selectedId === client.id ? <span className="selected-check"><Check /></span> : <ChevronRight />}
-            </motion.button>
+              <button type="button" className="client-select-main" onClick={() => onSelect(client)}>
+                <span className="client-avatar">{client.name.slice(0, 2).toUpperCase()}</span>
+                <span className="client-copy"><strong>{client.name}</strong><small>{[client.city, client.email].filter(Boolean).join(" · ") || "Sin datos adicionales"}</small></span>
+                {selectedId === client.id ? <span className="selected-check"><Check /></span> : <ChevronRight />}
+              </button>
+              <button type="button" className="client-statement-button" onClick={() => onStatement(client)} title={`Estado de cuenta de ${client.name}`}>
+                <FileText size={16} /> <span>Estado</span>
+              </button>
+            </motion.article>
           ))}
         </AnimatePresence>
         {!filtered.length && <EmptyState icon={UserRound} title="No encontramos clientes" body="Prueba otra búsqueda o crea un cliente nuevo." />}
@@ -1204,12 +1224,14 @@ function ProductScreen({
   products,
   cart,
   onAdd,
+  onDecrease,
   onPromo,
   onCart,
 }: {
   products: Product[];
   cart: CartLine[];
   onAdd: (product: Product) => void;
+  onDecrease: (product: Product) => void;
   onPromo: (product: Product) => void;
   onCart: () => void;
 }) {
@@ -1220,6 +1242,13 @@ function ProductScreen({
   const quantities = useMemo(() => {
     const result = new Map<number, number>();
     for (const line of cart) result.set(line.productId, (result.get(line.productId) || 0) + line.quantity);
+    return result;
+  }, [cart]);
+  const normalQuantities = useMemo(() => {
+    const result = new Map<number, number>();
+    for (const line of cart) {
+      if (!line.free && !line.groupId) result.set(line.productId, (result.get(line.productId) || 0) + line.quantity);
+    }
     return result;
   }, [cart]);
   const filtered = useMemo(() => {
@@ -1259,58 +1288,105 @@ function ProductScreen({
         <div className="result-meta"><span>{filtered.length} productos</span>{deferredQuery && <span>Resultados para “{deferredQuery}”</span>}</div>
         <motion.div className="product-grid" layout>
           <AnimatePresence initial={false} mode="popLayout">
-            {filtered.slice(0, visible).map((product) => (
-              <motion.article
-                layout="position"
-                className={`product-card ${quantities.has(product.id) ? "in-cart" : ""}`}
-                key={product.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.98 }}
-                transition={{ duration: 0.16 }}
-              >
-                <div className="product-card-top">
-                  <span className="product-category">{product.category}</span>
-                  <span className="product-code">SKU: {product.code}</span>
-                </div>
-                <h2>{product.name}</h2>
-                <div className="product-price-row">
-                  <div className="product-price">
-                    <strong>{money(product.price)}</strong>
-                    <small>Precio de lista</small>
+            {filtered.slice(0, visible).map((product) => {
+              const totalQuantity = quantities.get(product.id) || 0;
+              const normalQuantity = normalQuantities.get(product.id) || 0;
+              return (
+                <motion.article
+                  layout="position"
+                  className={`product-card ${totalQuantity ? "in-cart" : ""}`}
+                  key={product.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.98 }}
+                  transition={{ duration: 0.16 }}
+                >
+                  <div className="product-card-top">
+                    <span className="product-category">{product.category}</span>
+                    <span className="product-code">SKU: {product.code}</span>
                   </div>
-                  {quantities.has(product.id) && (
-                    <motion.span
-                      className="quantity-badge-card"
-                      initial={{ opacity: 0, scale: 0.9 }}
-                      animate={{ opacity: 1, scale: 1 }}
+                  <h2>{product.name}</h2>
+                  <div className="product-price-row">
+                    <div className="product-price">
+                      <strong>{money(product.price)}</strong>
+                      <small>Precio de lista</small>
+                    </div>
+                    {totalQuantity > 0 && (
+                      <motion.span
+                        className="quantity-badge-card"
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                      >
+                        {totalQuantity} en pedido
+                      </motion.span>
+                    )}
+                  </div>
+                  <div className="product-actions">
+                    <AnimatePresence initial={false} mode="wait">
+                      {normalQuantity > 0 ? (
+                        <motion.div
+                          key="catalog-stepper"
+                          className="catalog-stepper"
+                          initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                          transition={{ type: "spring", stiffness: 360, damping: 28 }}
+                          aria-label={`Cantidad normal de ${product.name}`}
+                        >
+                          <motion.button
+                            type="button"
+                            onClick={() => onDecrease(product)}
+                            whileTap={{ scale: 0.9 }}
+                            aria-label={`Quitar una pieza de ${product.name}`}
+                          >
+                            <Minus size={17} />
+                          </motion.button>
+                          <motion.strong
+                            key={normalQuantity}
+                            initial={{ opacity: 0, y: 6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.14 }}
+                          >
+                            {normalQuantity}
+                          </motion.strong>
+                          <motion.button
+                            type="button"
+                            onClick={() => onAdd(product)}
+                            whileTap={{ scale: 0.9 }}
+                            aria-label={`Agregar una pieza de ${product.name}`}
+                          >
+                            <Plus size={17} />
+                          </motion.button>
+                        </motion.div>
+                      ) : (
+                        <motion.button
+                          key="add-button"
+                          type="button"
+                          className="button primary compact-add"
+                          onClick={() => onAdd(product)}
+                          initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                          whileTap={{ scale: 0.96 }}
+                        >
+                          <Plus size={18} /> Agregar
+                        </motion.button>
+                      )}
+                    </AnimatePresence>
+                    <motion.button
+                      type="button"
+                      className="icon-button promo"
+                      onClick={() => onPromo(product)}
+                      whileTap={{ scale: 0.94 }}
+                      aria-label={`Agregar promoción de ${product.name}`}
+                      title="Agregar promoción"
                     >
-                      {quantities.get(product.id)} en pedido
-                    </motion.span>
-                  )}
-                </div>
-                <div className="product-actions">
-                  <motion.button
-                    type="button"
-                    className="button primary compact-add"
-                    onClick={() => onAdd(product)}
-                    whileTap={{ scale: 0.96 }}
-                  >
-                    <Plus size={18} /> Agregar
-                  </motion.button>
-                  <motion.button
-                    type="button"
-                    className="icon-button promo"
-                    onClick={() => onPromo(product)}
-                    whileTap={{ scale: 0.94 }}
-                    aria-label={`Agregar promoción de ${product.name}`}
-                    title="Agregar promoción"
-                  >
-                    <Sparkles size={18} />
-                  </motion.button>
-                </div>
-              </motion.article>
-            ))}
+                      <Sparkles size={18} />
+                    </motion.button>
+                  </div>
+                </motion.article>
+              );
+            })}
           </AnimatePresence>
         </motion.div>
 
@@ -1433,7 +1509,7 @@ function ReviewScreen({
   );
 }
 
-function SuccessScreen({ result, onNew }: { result: OrderResult; onNew: () => void }) {
+function SuccessScreen({ result, onNew, title = "Pedido registrado" }: { result: OrderResult; onNew: () => void; title?: string }) {
   const statusMessage = result.recovered
     ? "Este pedido ya estaba registrado; recuperamos el folio para evitar duplicados."
     : result.status === "sale" || result.status === "done"
@@ -1443,7 +1519,7 @@ function SuccessScreen({ result, onNew }: { result: OrderResult; onNew: () => vo
   return (
     <div className="screen success-screen">
       <motion.div className="success-symbol" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: "spring", stiffness: 220, damping: 18 }}><Check /></motion.div>
-      <span className="eyebrow">Pedido registrado</span>
+      <span className="eyebrow">{title}</span>
       <h1>{result.folio}</h1>
       <p>{statusMessage}</p>
       <section className="success-total"><span>Total en Odoo</span><strong>{money(result.total)}</strong><small>Subtotal {money(result.subtotal)} · Impuestos {money(result.tax)}</small></section>
@@ -1455,12 +1531,593 @@ function SuccessScreen({ result, onNew }: { result: OrderResult; onNew: () => vo
   );
 }
 
+function statementDate(value: string) {
+  if (!value) return "Sin fecha";
+  const parsed = new Date(value.replace(" ", "T") + (value.includes("T") ? "" : "Z"));
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("es-MX", { dateStyle: "medium" });
+}
+
+function safePdfText(value: string) {
+  return value
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[–—]/g, "-")
+    .replace(/•/g, "-")
+    .replace(/[^\x09\x0A\x0D\x20-\xFF]/g, "?");
+}
+
+function pdfString(value: string) {
+  return `(${safePdfText(value).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)").replace(/[\r\n]+/g, " ")})`;
+}
+
+function pdfByteLength(value: string) {
+  return value.length;
+}
+
+function pdfBytes(value: string) {
+  const bytes = new Uint8Array(value.length);
+  for (let index = 0; index < value.length; index += 1) bytes[index] = value.charCodeAt(index) & 0xff;
+  return bytes;
+}
+
+function buildStatementPdf(statement: CustomerStatement) {
+  const width = 612;
+  const height = 792;
+  const margin = 46;
+  const bottom = 54;
+  const rows = statement.lines.length ? statement.lines : [];
+  const pages: string[] = [];
+  let current = "";
+  let y = height - margin;
+  let pageNumber = 0;
+
+  const text = (value: string, x: number, size = 10, bold = false, color = "0.14 0.10 0.16") => {
+    current += `${color} rg BT /${bold ? "F2" : "F1"} ${size} Tf ${x} ${y} Td ${pdfString(value)} Tj ET\n`;
+  };
+  const line = (yPosition = y, color = "0.72 0.51 0.76") => {
+    current += `${color} RG 0.6 w ${margin} ${yPosition} m ${width - margin} ${yPosition} l S\n`;
+  };
+  const box = (x: number, yPosition: number, boxWidth: number, boxHeight: number, color = "0.97 0.91 0.98") => {
+    current += `${color} rg ${x} ${yPosition} ${boxWidth} ${boxHeight} re f\n`;
+  };
+  const startPage = () => {
+    if (current) {
+      text(`Pagina ${pageNumber}`, width - 106, 8, false);
+      pages.push(current);
+    }
+    pageNumber += 1;
+    current = "0.995 0.980 1.000 rg 0 0 612 792 re f\n";
+    current += "0.11 0.06 0.13 rg 0 704 612 88 re f\n";
+    y = height - margin + 4;
+    text("RapyVet", margin, 22, true, "1 1 1");
+    y -= 24;
+    text("Distribuidor veterinario", margin, 11, false, "0.94 0.70 0.96");
+    y -= 18;
+    line();
+    y -= 28;
+  };
+  const tableHeader = () => {
+    box(margin - 8, y - 7, width - margin * 2 + 16, 20, "0.91 0.82 0.93");
+    text("Documento", margin, 9, true, "0.26 0.12 0.30");
+    text("Vencimiento", 316, 9, true, "0.26 0.12 0.30");
+    text("Estado", 405, 9, true, "0.26 0.12 0.30");
+    text("Saldo abierto", 488, 9, true, "0.26 0.12 0.30");
+    y -= 11;
+    line(y, "0.72 0.51 0.76");
+    y -= 16;
+  };
+
+  startPage();
+  text("Estado de cuenta", margin, 18, true, "0.26 0.12 0.30");
+  y -= 24;
+  text(statement.customer.name || "Cliente", margin, 12, true);
+  y -= 17;
+  text(`Generado: ${new Date(statement.generated_at * 1000).toLocaleString("es-MX")}`, margin, 10, false, "0.38 0.32 0.40");
+  y -= 26;
+  box(margin - 8, y - 18, width - margin * 2 + 16, 44, "0.95 0.88 0.96");
+  text(`Saldo pendiente: ${money(statement.total_due)}`, margin, 13, true, "0.20 0.10 0.24");
+  text(`Vencido: ${money(statement.overdue_due)}`, 250, 13, true, "0.42 0.10 0.16");
+  text(`Saldo a favor: ${money(statement.credit_balance)}`, 410, 13, true, "0.10 0.34 0.20");
+  y -= 34;
+  line(y, "0.72 0.51 0.76");
+  y -= 24;
+  text("Movimientos abiertos", margin, 14, true, "0.26 0.12 0.30");
+  y -= 24;
+  tableHeader();
+
+  if (!rows.length) {
+    text("Sin movimientos abiertos. Cuenta al corriente.", margin, 11);
+  } else {
+    for (const row of rows) {
+      if (y < bottom + 42) {
+        startPage();
+        text("Movimientos abiertos", margin, 14, true, "0.26 0.12 0.30");
+        y -= 24;
+        tableHeader();
+      }
+      text((row.document || row.label || "Movimiento").slice(0, 43), margin, 9, true);
+      text(statementDate(row.due_date), 316, 9, false, "0.30 0.26 0.32");
+      text(row.status || "Pendiente", 405, 9, false, row.status === "Vencido" ? "0.62 0.10 0.16" : row.status === "A favor" ? "0.10 0.40 0.24" : "0.30 0.26 0.32");
+      text(money(row.open_amount), 488, 9, true);
+      y -= 14;
+      if (row.reference || row.label) {
+        text(`${row.label || ""}${row.reference ? ` · Ref. ${row.reference}` : ""}`.slice(0, 70), margin, 8, false, "0.44 0.38 0.46");
+        y -= 12;
+      }
+      line(y + 4, "0.86 0.77 0.88");
+      y -= 9;
+    }
+  }
+  y = Math.max(y - 18, bottom + 22);
+  text("Solo consulta: los pagos se aplican unicamente en Odoo.", margin, 9, false, "0.42 0.34 0.45");
+  text(`Pagina ${pageNumber}`, width - 106, 8, false);
+  pages.push(current);
+
+  const pageObjectNumbers = pages.map((_, index) => 3 + index * 2);
+  const fontRegularObject = 3 + pages.length * 2;
+  const fontBoldObject = fontRegularObject + 1;
+  const objects: string[] = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Pages /Kids [${pageObjectNumbers.map((objectNumber) => `${objectNumber} 0 R`).join(" ")}] /Count ${pages.length} >>`,
+  ];
+
+  pages.forEach((content, index) => {
+    const pageObject = pageObjectNumbers[index];
+    const contentObject = pageObject + 1;
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontRegularObject} 0 R /F2 ${fontBoldObject} 0 R >> >> /Contents ${contentObject} 0 R >>`);
+    objects.push(`<< /Length ${pdfByteLength(content)} >>\nstream\n${content}endstream`);
+  });
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
+  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
+
+  let pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(pdfByteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xrefOffset = pdfByteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (let index = 1; index <= objects.length; index += 1) {
+    pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  return new Blob([pdfBytes(pdf)], { type: "application/pdf" });
+}
+
+function downloadStatementPdf(statement: CustomerStatement) {
+  const filenameBase = safePdfText(statement.customer.name || "cliente")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 52) || "cliente";
+  const blob = buildStatementPdf(statement);
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `estado-cuenta-${filenameBase}.pdf`;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+function StatementScreen({
+  customerId,
+  initialCustomer,
+  onBack,
+}: {
+  customerId: number;
+  initialCustomer?: Client;
+  onBack: () => void;
+}) {
+  const [statement, setStatement] = useState<CustomerStatement | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  const fetchStatement = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setStatement(await getCustomerStatement(customerId));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No fue posible consultar el estado de cuenta.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchStatement();
+  }, [customerId]);
+
+  const current = statement?.customer || initialCustomer;
+  const summaryText = statement
+    ? `Estado de cuenta de ${current?.name || "cliente"}\nSaldo pendiente: ${money(statement.total_due)}\nVencido: ${money(statement.overdue_due)}\nSaldo a favor: ${money(statement.credit_balance)}`
+    : "";
+
+  async function copySummary() {
+    if (!summaryText) return;
+    try {
+      await navigator.clipboard.writeText(summaryText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setError("No se pudo copiar el resumen en este dispositivo.");
+    }
+  }
+
+  function saveStatementPdf() {
+    if (!statement) return;
+    try {
+      setError("");
+      downloadStatementPdf(statement);
+    } catch {
+      setError("No se pudo generar el PDF en este dispositivo. Intenta actualizar y descargar de nuevo.");
+    }
+  }
+
+  return (
+    <div className="screen list-screen statement-screen">
+      <button type="button" className="back-link" onClick={onBack}><ArrowLeft /> Volver</button>
+      <div className="screen-title-row">
+        <div><span className="eyebrow">Consulta de cliente · solo lectura</span><h1>Estado de cuenta</h1><p>{current?.name || "Cliente"}</p></div>
+        <button type="button" className="button secondary" onClick={() => void fetchStatement()} disabled={loading}><RefreshCw className={loading ? "spin" : ""} size={16} /> Actualizar</button>
+      </div>
+      {loading && !statement ? <div className="center-state"><LoaderCircle className="spin" size={32} /><p>Consultando saldos abiertos en Odoo…</p></div> : error && !statement ? <div className="center-state"><CircleAlert size={36} /><h1>No se pudo consultar</h1><p>{error}</p><button type="button" className="button primary" onClick={() => void fetchStatement()}><RefreshCw /> Reintentar</button></div> : statement ? (
+        <>
+          <div className="statement-toolbar"><span><Clock size={14} /> Actualizado {new Date(statement.generated_at * 1000).toLocaleString("es-MX")}</span><div><button type="button" className="button secondary" onClick={() => void copySummary()}><Copy size={15} /> {copied ? "Copiado" : "Copiar resumen"}</button><button type="button" className="button primary" onClick={saveStatementPdf}><Download size={15} /> Descargar PDF</button></div></div>
+          {error && <p className="form-error"><CircleAlert size={16} /> {error}</p>}
+          <section className="statement-summary-grid">
+            <article className="statement-card"><small>Saldo pendiente</small><strong>{money(statement.total_due)}</strong><span>{statement.lines.length} movimientos abiertos</span></article>
+            <article className="statement-card overdue"><small>Vencido</small><strong>{money(statement.overdue_due)}</strong><span>Requiere seguimiento</span></article>
+            <article className="statement-card"><small>Vigente</small><strong>{money(statement.current_due)}</strong><span>Dentro de plazo</span></article>
+            <article className="statement-card credit"><small>Saldo a favor</small><strong>{money(statement.credit_balance)}</strong><span>No se aplican pagos desde aquí</span></article>
+          </section>
+          <section className="statement-lines-card"><div className="section-heading"><div><span className="eyebrow">Apuntes abiertos</span><h2>Movimientos pendientes</h2></div></div>{statement.lines.length ? <div className="statement-line-list">{statement.lines.map((line) => <article className="statement-line" key={line.id}><div><strong>{line.document || line.label || "Movimiento"}</strong><small>{line.label}{line.reference ? ` · Ref. ${line.reference}` : ""}</small><small>Vence {statementDate(line.due_date)}{line.days_overdue ? ` · ${line.days_overdue} días vencido` : ""}</small></div><div className="statement-line-amount"><span className={`statement-status ${line.status === "Vencido" ? "danger" : line.status === "A favor" ? "success" : ""}`}>{line.status}</span><strong>{money(line.open_amount)}</strong></div></article>)}</div> : <EmptyState icon={CircleCheck} title="Cuenta al corriente" body="No hay movimientos abiertos para este cliente." />}</section>
+          <p className="read-only-note"><ShieldCheck size={16} /> Esta pantalla es de consulta. Las aplicaciones de pago se realizan únicamente en Odoo.</p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function OrderEditScreen({
+  orderId,
+  clients,
+  products,
+  onBack,
+  onSaved,
+}: {
+  orderId: number;
+  clients: Client[];
+  products: Product[];
+  onBack: () => void;
+  onSaved: (result: OrderResult) => void;
+}) {
+  const [detail, setDetail] = useState<OrderDetail | null>(null);
+  const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
+  const [lines, setLines] = useState<CartLine[]>([]);
+  const [note, setNote] = useState("");
+  const [query, setQuery] = useState("");
+  const [customerQuery, setCustomerQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const deferredCustomerQuery = useDeferredValue(customerQuery);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+
+    void getOrderDetail(orderId)
+      .then((result) => {
+        if (!active) return;
+        setDetail(result);
+        setSelectedCustomerId(result.customer_id);
+        setLines(
+          result.lines.map((line) => ({
+            id: `odoo-${line.id}`,
+            productId: line.product_id,
+            code: line.code,
+            name: line.name,
+            quantity: Math.max(1, Math.round(line.quantity)),
+            unitPrice: line.unit_price,
+            free: false,
+          })),
+        );
+        setNote(result.note || "");
+      })
+      .catch((caught) => {
+        if (active) setError(caught instanceof Error ? caught.message : "No fue posible cargar el pedido.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [orderId]);
+
+  const selectedCustomer = useMemo(() => {
+    return clients.find((client) => client.id === selectedCustomerId) || null;
+  }, [clients, selectedCustomerId]);
+
+  const customerResults = useMemo(() => {
+    const needle = normalize(deferredCustomerQuery);
+    if (!needle) return [];
+    return clients
+      .filter((client) => normalize(`${client.name} ${client.email} ${client.phone} ${client.vat}`).includes(needle))
+      .slice(0, 6);
+  }, [clients, deferredCustomerQuery]);
+
+  const productResults = useMemo(() => {
+    const needle = normalize(deferredQuery);
+    if (!needle) return [];
+    return products
+      .filter((product) => normalize(`${product.code} ${product.name} ${product.category}`).includes(needle))
+      .slice(0, 8);
+  }, [products, deferredQuery]);
+
+  const total = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
+
+  function addProduct(product: Product) {
+    setLines((current) => {
+      const existing = current.find((line) => line.productId === product.id);
+      if (existing) {
+        return current.map((line) =>
+          line.id === existing.id ? { ...line, quantity: line.quantity + 1 } : line,
+        );
+      }
+      return [
+        ...current,
+        {
+          id: uniqueId(),
+          productId: product.id,
+          code: product.code,
+          name: product.name,
+          quantity: 1,
+          unitPrice: product.price,
+          free: false,
+        },
+      ];
+    });
+    setQuery("");
+  }
+
+  function updateLine(id: string, patch: Partial<CartLine>) {
+    setLines((current) =>
+      current.map((line) =>
+        line.id === id
+          ? {
+              ...line,
+              ...patch,
+              quantity: patch.quantity !== undefined ? Math.max(1, patch.quantity) : line.quantity,
+              unitPrice: patch.unitPrice !== undefined ? Math.max(0, patch.unitPrice) : line.unitPrice,
+            }
+          : line,
+      ),
+    );
+  }
+
+  async function save() {
+    if (!detail || !detail.editable || busy || !lines.length || !selectedCustomerId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await updateOrder(orderId, {
+        customer_id: selectedCustomerId,
+        lines: lines.map((line) => ({
+          product_id: line.productId,
+          quantity: line.quantity,
+          unit_price: line.unitPrice,
+        })),
+        note,
+      });
+      onSaved(result);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "No fue posible guardar los cambios.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading) return <div className="screen center-state"><LoaderCircle className="spin" size={32} /><p>Cargando pedido desde Odoo…</p></div>;
+  if (!detail) return <div className="screen center-state"><CircleAlert size={36} /><h1>No se pudo abrir el pedido</h1><p>{error}</p><button type="button" className="button secondary" onClick={onBack}><ArrowLeft /> Volver</button></div>;
+
+  return (
+    <div className="screen list-screen order-editor-screen">
+      <button type="button" className="back-link" onClick={onBack}><ArrowLeft /> Volver al historial</button>
+      <div className="screen-title-row">
+        <div>
+          <span className="eyebrow">Editor seguro · {detail.folio}</span>
+          <h1>{detail.editable ? "Editar pedido" : "Detalle del pedido"}</h1>
+          <p>{selectedCustomer?.name || detail.customer_name} · {detail.state_label}</p>
+        </div>
+        <span className={`order-state-badge ${detail.editable ? "draft" : "sale"}`}>{detail.state_label}</span>
+      </div>
+
+      {!detail.editable && (
+        <div className="read-only-banner">
+          <ShieldCheck size={18} />
+          <span>{detail.editable_reason}</span>
+        </div>
+      )}
+
+      <section className="order-editor-card">
+        <div className="editor-section">
+          <span className="eyebrow">Cliente</span>
+          <article className="editor-customer-card">
+            <span className="client-avatar">{(selectedCustomer?.name || detail.customer_name).slice(0, 2).toUpperCase()}</span>
+            <div>
+              <strong>{selectedCustomer?.name || detail.customer_name}</strong>
+              <small>{selectedCustomer ? [selectedCustomer.city, selectedCustomer.email].filter(Boolean).join(" · ") || "Cliente de Odoo" : "Cliente del pedido"}</small>
+            </div>
+          </article>
+          {detail.editable && (
+            <>
+              <label className="search-field compact-search">
+                <Search size={18} />
+                <input
+                  value={customerQuery}
+                  onChange={(event) => setCustomerQuery(event.target.value)}
+                  placeholder="Cambiar cliente..."
+                  autoComplete="off"
+                />
+                {customerQuery && <button type="button" onClick={() => setCustomerQuery("")} aria-label="Limpiar cliente"><X size={17} /></button>}
+              </label>
+              {customerQuery && (
+                <div className="editor-product-results customer-results">
+                  {customerResults.map((client) => (
+                    <button
+                      type="button"
+                      key={client.id}
+                      onClick={() => {
+                        setSelectedCustomerId(client.id);
+                        setCustomerQuery("");
+                      }}
+                    >
+                      <span>
+                        <strong>{client.name}</strong>
+                        <small>{[client.city, client.email].filter(Boolean).join(" · ") || "Cliente de Odoo"}</small>
+                      </span>
+                      {client.id === selectedCustomerId ? <Check size={17} /> : <ChevronRight size={17} />}
+                    </button>
+                  ))}
+                  {!customerResults.length && <p className="editor-empty-result">Sin clientes con esa busqueda.</p>}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="editor-section">
+          <span className="eyebrow">Productos</span>
+          <label className="search-field compact-search">
+            <Search size={18} />
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={detail.editable ? "Agregar producto al pedido..." : "Pedido en modo lectura"}
+              autoComplete="off"
+              disabled={!detail.editable}
+            />
+            {query && <button type="button" onClick={() => setQuery("")} aria-label="Limpiar búsqueda"><X size={17} /></button>}
+          </label>
+          {detail.editable && query && (
+            <div className="editor-product-results">
+              {productResults.map((product) => (
+                <button type="button" key={product.id} onClick={() => addProduct(product)}>
+                  <span>
+                    <strong>{product.name}</strong>
+                    <small>{product.code} · {money(product.price)}</small>
+                  </span>
+                  <Plus size={17} />
+                </button>
+              ))}
+              {!productResults.length && <p className="editor-empty-result">Sin productos con esa busqueda.</p>}
+            </div>
+          )}
+
+          <div className="editor-lines">
+            {lines.map((line) => (
+              <article className="editor-line" key={line.id}>
+                <div className="editor-line-copy">
+                  <strong>{line.name}</strong>
+                  <small>{line.code || "Sin código"} · {line.unitPrice === 0 ? "Sin cargo" : money(line.unitPrice)}</small>
+                </div>
+                <div className="editor-line-actions">
+                  <div className="stepper mini-stepper" aria-label={`Cantidad de ${line.name}`}>
+                    <button
+                      type="button"
+                      disabled={!detail.editable || line.quantity <= 1}
+                      onClick={() => updateLine(line.id, { quantity: line.quantity - 1 })}
+                    >
+                      <Minus size={15} />
+                    </button>
+                    <strong>{line.quantity}</strong>
+                    <button
+                      type="button"
+                      disabled={!detail.editable}
+                      onClick={() => updateLine(line.id, { quantity: line.quantity + 1 })}
+                    >
+                      <Plus size={15} />
+                    </button>
+                  </div>
+                  <label className="price-input editor-price-input">
+                    <span>Precio</span>
+                    <div>
+                      <small>$</small>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={line.unitPrice}
+                        disabled={!detail.editable}
+                        onChange={(event) => updateLine(line.id, { unitPrice: Number(event.target.value) })}
+                      />
+                    </div>
+                  </label>
+                  {detail.editable && (
+                    <button
+                      type="button"
+                      className="icon-button danger-button"
+                      onClick={() => setLines((current) => current.filter((item) => item.id !== line.id))}
+                      aria-label={`Eliminar ${line.name}`}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  )}
+                </div>
+              </article>
+            ))}
+            {!lines.length && <EmptyState icon={ShoppingBag} title="Sin productos" body="Agrega al menos un producto para guardar el pedido." />}
+          </div>
+        </div>
+
+        <label className="note-field">
+          <span>Notas <small>Opcional</small></span>
+          <textarea
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            disabled={!detail.editable}
+            placeholder="Observaciones del pedido..."
+            maxLength={2000}
+          />
+        </label>
+
+        <div className="editor-total">
+          <span>Total estimado<strong>{money(total)}</strong></span>
+          {detail.editable && (
+            <button type="button" className="button primary" onClick={() => void save()} disabled={busy || !lines.length || !selectedCustomerId}>
+              {busy ? <LoaderCircle className="spin" /> : <BadgeCheck />}
+              {busy ? "Guardando..." : "Guardar cambios"}
+            </button>
+          )}
+        </div>
+        {error && <p className="form-error"><CircleAlert size={16} /> {error}</p>}
+      </section>
+
+      <p className="read-only-note"><ShieldCheck size={16} /> Editar aquí solo modifica cotizaciones abiertas en Odoo. No confirma pedidos ni aplica pagos.</p>
+    </div>
+  );
+}
+
 function HistoryScreen({
   seller,
   onRefresh,
+  onEdit,
 }: {
   seller?: Seller;
   onRefresh?: () => void;
+  onEdit?: (order: SellerOrderSummary) => void;
 }) {
   const [orders, setOrders] = useState<SellerOrderSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1616,8 +2273,13 @@ function HistoryScreen({
                   )}
                 </div>
                 <div className="history-card-footer">
-                  <span>Total Odoo</span>
-                  <strong>{money(order.amount_total)}</strong>
+                  <div><span>Total Odoo</span><strong>{money(order.amount_total)}</strong></div>
+                  {onEdit && (
+                    <button type="button" className="button secondary history-edit-button" onClick={() => onEdit(order)}>
+                      {order.state === "draft" || order.state === "sent" ? <FileText size={15} /> : <ChevronRight size={15} />}
+                      {order.state === "draft" || order.state === "sent" ? "Editar" : "Ver"}
+                    </button>
+                  )}
                 </div>
               </article>
             );
@@ -2154,7 +2816,7 @@ function BottomNav({
   navigate: (screen: Screen) => void;
   onOpenMore: () => void;
 }) {
-  const isMoreActive = screen === "outbox" || screen === "history";
+  const isMoreActive = screen === "outbox" || screen === "history" || screen === "statement" || screen === "orderEdit";
   const catalogLabel = hasCustomer || screen === "products" ? "Productos" : "Cliente";
   const CatalogIcon = hasCustomer || screen === "products" ? PackageSearch : UserRoundPlus;
 
@@ -2279,6 +2941,10 @@ export function SalesApp() {
   const [pendingCount, setPendingCount] = useState(0);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [tutorialAutoChecked, setTutorialAutoChecked] = useState(false);
+  const [statementCustomerId, setStatementCustomerId] = useState<number | null>(null);
+  const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
+  const [successTitle, setSuccessTitle] = useState("Pedido registrado");
   const pwaInstall = usePwaInstall();
   const mainRef = useRef<HTMLElement>(null);
 
@@ -2336,15 +3002,17 @@ export function SalesApp() {
   }, [toast]);
 
   useEffect(() => {
-    if (!hydrated || !authenticated || !catalog || !session || session.must_change_password) return;
+    if (!hydrated || !authenticated || !catalog || !session || session.must_change_password || tutorialAutoChecked) return;
+    setTutorialAutoChecked(true);
     try {
       if (!localStorage.getItem(tutorialSeenKey(session.seller.id))) {
+        localStorage.setItem(tutorialSeenKey(session.seller.id), "true");
         setTutorialOpen(true);
       }
     } catch {
       setTutorialOpen(true);
     }
-  }, [authenticated, catalog, hydrated, session]);
+  }, [authenticated, catalog, hydrated, session, tutorialAutoChecked]);
 
   useLayoutEffect(() => {
     if (mainRef.current) mainRef.current.scrollTop = 0;
@@ -2381,6 +3049,16 @@ export function SalesApp() {
     setToast(`${client.name} seleccionado`);
   }
 
+  function openStatement(client: Client) {
+    setStatementCustomerId(client.id);
+    setScreen("statement");
+  }
+
+  function openOrderEditor(order: SellerOrderSummary) {
+    setEditingOrderId(order.id);
+    setScreen("orderEdit");
+  }
+
   function addProduct(product: Product) {
     setCart((current) => {
       const existing = current.find((line) => line.productId === product.id && !line.free && !line.groupId);
@@ -2388,6 +3066,16 @@ export function SalesApp() {
       return [...current, { id: uniqueId(), productId: product.id, code: product.code, name: product.name, quantity: 1, unitPrice: product.price, free: false }];
     });
     setToast(`${product.name} agregado`);
+  }
+
+  function decreaseProduct(product: Product) {
+    setCart((current) => {
+      const existing = current.find((line) => line.productId === product.id && !line.free && !line.groupId);
+      if (!existing) return current;
+      if (existing.quantity <= 1) return current.filter((line) => line.id !== existing.id);
+      return current.map((line) => line.id === existing.id ? { ...line, quantity: line.quantity - 1 } : line);
+    });
+    setToast(`${product.name} actualizado`);
   }
 
   function addPromotion(paid: number, free: number) {
@@ -2486,6 +3174,7 @@ export function SalesApp() {
     setIdempotencyKey(freshOrderKey());
     setOrderResult(null);
     setSubmitError("");
+    setSuccessTitle("Pedido registrado");
     setScreen("clients");
   }
 
@@ -2493,6 +3182,7 @@ export function SalesApp() {
     setSession(nextSession);
     setCurrentLoginPassword(password);
     setAuthenticated(!nextSession.must_change_password);
+    setTutorialAutoChecked(false);
   }
 
   function logout() {
@@ -2500,6 +3190,9 @@ export function SalesApp() {
     setSession(null);
     setCurrentLoginPassword("");
     setAuthenticated(false);
+    setTutorialAutoChecked(false);
+    setStatementCustomerId(null);
+    setEditingOrderId(null);
   }
 
   function finishTutorial(target?: Screen) {
@@ -2589,14 +3282,17 @@ export function SalesApp() {
                   onCart={() => setScreen("cart")}
                   onHistory={() => setScreen("history")}
                   onOutbox={() => setScreen("outbox")}
+                  onStatement={customer ? () => openStatement(customer) : undefined}
                 />
               )}
-              {screen === "clients" && <ClientScreen clients={catalog.clients} selectedId={customerId} onSelect={selectClient} onNew={() => { setClientError(""); setNewClientOpen(true); }} />}
-              {screen === "products" && <ProductScreen products={catalog.products} cart={cart} onAdd={addProduct} onPromo={setPromoProduct} onCart={() => setScreen("cart")} />}
+              {screen === "clients" && <ClientScreen clients={catalog.clients} selectedId={customerId} onSelect={selectClient} onStatement={openStatement} onNew={() => { setClientError(""); setNewClientOpen(true); }} />}
+              {screen === "products" && <ProductScreen products={catalog.products} cart={cart} onAdd={addProduct} onDecrease={decreaseProduct} onPromo={setPromoProduct} onCart={() => setScreen("cart")} />}
               {screen === "cart" && <CartScreen cart={cart} onChange={updateLine} onRemove={removeLine} onProducts={() => setScreen(customer ? "products" : "clients")} onReview={() => customer ? setScreen("review") : setScreen("clients")} />}
               {screen === "review" && customer && <ReviewScreen customer={customer} cart={cart} note={note} busy={submitBusy} error={submitError} onNote={setNote} onBack={() => setScreen("cart")} onSubmit={() => void submitOrder()} />}
-              {screen === "success" && orderResult && <SuccessScreen result={orderResult} onNew={startNewOrder} />}
-              {screen === "history" && <HistoryScreen seller={session.seller} onRefresh={() => void loadCatalog(false)} />}
+              {screen === "success" && orderResult && <SuccessScreen result={orderResult} title={successTitle} onNew={startNewOrder} />}
+              {screen === "history" && <HistoryScreen seller={session.seller} onRefresh={() => void loadCatalog(false)} onEdit={openOrderEditor} />}
+              {screen === "statement" && statementCustomerId && <StatementScreen customerId={statementCustomerId} initialCustomer={catalog.clients.find((item) => item.id === statementCustomerId)} onBack={() => setScreen("clients")} />}
+              {screen === "orderEdit" && editingOrderId && <OrderEditScreen orderId={editingOrderId} clients={catalog.clients} products={catalog.products} onBack={() => setScreen("history")} onSaved={(result) => { setOrderResult(result); setSuccessTitle("Pedido actualizado"); setEditingOrderId(null); setScreen("success"); setToast("Pedido actualizado en Odoo"); }} />}
               {screen === "outbox" && <OutboxScreen onNewOrder={startNewOrder} onNavigateHome={() => setScreen("home")} />}
             </motion.div>
           </AnimatePresence>

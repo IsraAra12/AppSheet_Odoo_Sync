@@ -7,11 +7,12 @@ import threading
 import time
 import xmlrpc.client
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 from urllib.parse import quote
 
 from backend.config import Settings
-from backend.schemas import CreateClientRequest, CreateOrderRequest
+from backend.schemas import CreateClientRequest, CreateOrderRequest, UpdateOrderRequest
 from backend.security import (
     hash_seller_password,
     password_errors,
@@ -34,6 +35,32 @@ STATE_LABELS: dict[str, str] = {
     "done": "Bloqueado / Entregado",
     "cancel": "Cancelado",
 }
+EDITABLE_ORDER_STATES = {"draft", "sent"}
+
+
+def _many2one_id(value: Any) -> int:
+    return int(value[0]) if isinstance(value, (list, tuple)) and value else 0
+
+
+def _many2one_name(value: Any, fallback: str = "") -> str:
+    return str(value[1]) if isinstance(value, (list, tuple)) and len(value) > 1 else fallback
+
+
+def _parse_odoo_date(value: Any) -> date | None:
+    if not value:
+        return None
+    raw = str(value).split(" ", 1)[0]
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _days_overdue(value: Any) -> int:
+    due_date = _parse_odoo_date(value)
+    if not due_date:
+        return 0
+    return max(0, (date.today() - due_date).days)
 
 
 
@@ -515,9 +542,14 @@ class OdooService:
         }
 
     @staticmethod
-    def _from_record(record: dict[str, Any], *, recovered: bool) -> OrderResult:
+    def _from_record(
+        record: dict[str, Any],
+        *,
+        recovered: bool,
+        status_override: str | None = None,
+    ) -> OrderResult:
         state = str(record.get("state") or "")
-        status = (
+        status = status_override or (
             "Pedido recuperado"
             if recovered and state in {"sale", "done"}
             else "Cotización recuperada"
@@ -535,6 +567,65 @@ class OdooService:
             total=float(record.get("amount_total") or 0),
             recovered=recovered,
         )
+
+    def _customer_record(self, customer_id: int, *, proxy: Any | None = None) -> dict[str, Any]:
+        records = self._call(
+            "res.partner",
+            "search_read",
+            [[("id", "=", int(customer_id)), ("active", "=", True)]],
+            {
+                "fields": [
+                    "id",
+                    "name",
+                    "email",
+                    "phone",
+                    "street",
+                    "city",
+                    "zip",
+                    "vat",
+                    "commercial_partner_id",
+                ],
+                "limit": 1,
+            },
+            proxy=proxy,
+        )
+        if not records:
+            raise ValueError("El cliente ya no está disponible en Odoo.")
+        return dict(records[0])
+
+    def _validate_products(self, request: CreateOrderRequest | UpdateOrderRequest, *, proxy: Any | None = None) -> None:
+        product_ids = sorted({line.product_id for line in request.lines})
+        available = self._call(
+            "product.product",
+            "search_read",
+            [[
+                ("id", "in", product_ids),
+                ("active", "=", True),
+                ("sale_ok", "=", True),
+            ]],
+            {"fields": ["id"]},
+            proxy=proxy,
+        )
+        available_ids = {int(item["id"]) for item in available}
+        if any(product_id not in available_ids for product_id in product_ids):
+            raise ValueError(
+                "Uno o más productos ya no están disponibles. Actualiza el catálogo."
+            )
+
+    @staticmethod
+    def _order_lines(request: CreateOrderRequest | UpdateOrderRequest) -> list[tuple[int, int, dict[str, Any]]]:
+        return [
+            (
+                0,
+                0,
+                {
+                    "product_id": line.product_id,
+                    "product_uom_qty": line.quantity,
+                    "price_unit": line.unit_price,
+                },
+            )
+            for line in request.lines
+        ]
 
     def create_order(self, request: CreateOrderRequest, *, seller: Seller) -> OrderResult:
         proxy = self._models()
@@ -691,11 +782,245 @@ class OdooService:
             })
         return orders
 
+    def customer_statement(self, customer_id: int) -> dict[str, Any]:
+        """Return open receivable items for a customer without exposing payment writes."""
+        proxy = self._models()
+        customer_record = self._customer_record(customer_id, proxy=proxy)
+        commercial_partner_id = _many2one_id(customer_record.get("commercial_partner_id")) or int(customer_id)
+        records = self._call(
+            "account.move.line",
+            "search_read",
+            [[
+                ("partner_id", "child_of", commercial_partner_id),
+                ("parent_state", "=", "posted"),
+                ("reconciled", "=", False),
+                ("account_id.account_type", "=", "asset_receivable"),
+                ("amount_residual", "!=", 0),
+            ]],
+            {
+                "fields": [
+                    "id",
+                    "date",
+                    "invoice_date",
+                    "date_maturity",
+                    "move_id",
+                    "move_name",
+                    "name",
+                    "ref",
+                    "account_id",
+                    "amount_residual",
+                    "amount_residual_currency",
+                    "debit",
+                    "credit",
+                    "balance",
+                    "currency_id",
+                    "company_currency_id",
+                ],
+                "order": "date_maturity asc, date asc, id asc",
+                "limit": 200,
+            },
+            proxy=proxy,
+        )
+
+        lines: list[dict[str, Any]] = []
+        total_due = 0.0
+        overdue_due = 0.0
+        credit_balance = 0.0
+        for item in records:
+            residual_company = float(item.get("amount_residual") or 0.0)
+            currency_id = _many2one_id(item.get("currency_id"))
+            residual = (
+                float(item.get("amount_residual_currency") or residual_company)
+                if currency_id
+                else residual_company
+            )
+            original = abs(float(item.get("debit") or 0.0) - float(item.get("credit") or 0.0))
+            if not original:
+                original = abs(float(item.get("balance") or 0.0))
+            due_date = str(item.get("date_maturity") or item.get("invoice_date") or item.get("date") or "")
+            days_overdue = _days_overdue(due_date) if residual > 0 else 0
+            if residual > 0:
+                total_due += residual
+                if days_overdue:
+                    overdue_due += residual
+                line_status = "Vencido" if days_overdue else "Vigente"
+            else:
+                credit_balance += abs(residual)
+                line_status = "A favor"
+            currency = (
+                _many2one_name(item.get("currency_id"))
+                or _many2one_name(item.get("company_currency_id"))
+                or "MXN"
+            )
+            lines.append(
+                {
+                    "id": int(item["id"]),
+                    "date": str(item.get("date") or item.get("invoice_date") or ""),
+                    "due_date": due_date,
+                    "document": _many2one_name(item.get("move_id")) or str(item.get("move_name") or ""),
+                    "label": str(item.get("name") or "Movimiento"),
+                    "reference": str(item.get("ref") or ""),
+                    "open_amount": residual,
+                    "original_amount": original,
+                    "currency": currency,
+                    "days_overdue": days_overdue,
+                    "status": line_status,
+                }
+            )
+
+        customer = {
+            "id": int(customer_record["id"]),
+            "name": str(customer_record.get("name") or "Cliente"),
+            "email": str(customer_record.get("email") or ""),
+            "phone": str(customer_record.get("phone") or ""),
+            "street": str(customer_record.get("street") or ""),
+            "city": str(customer_record.get("city") or ""),
+            "postal_code": str(customer_record.get("zip") or ""),
+            "vat": str(customer_record.get("vat") or ""),
+        }
+        return {
+            "customer": customer,
+            "generated_at": int(time.time()),
+            "total_due": total_due,
+            "overdue_due": overdue_due,
+            "current_due": max(0.0, total_due - overdue_due),
+            "credit_balance": credit_balance,
+            "lines": lines,
+        }
+
+    def order_detail(self, order_id: int, *, seller: Seller) -> dict[str, Any]:
+        proxy = self._models()
+        records = self._call(
+            "sale.order",
+            "search_read",
+            [[("id", "=", int(order_id)), ("user_id", "=", seller.id)]],
+            {
+                "fields": [
+                    "id",
+                    "name",
+                    "partner_id",
+                    "amount_total",
+                    "amount_untaxed",
+                    "amount_tax",
+                    "state",
+                    "note",
+                    "date_order",
+                    "client_order_ref",
+                    "order_line",
+                ],
+                "limit": 1,
+            },
+            proxy=proxy,
+        )
+        if not records:
+            raise ValueError("No encontramos el pedido o no pertenece a tu usuario.")
+        record = dict(records[0])
+        state = str(record.get("state") or "draft")
+        line_ids = [
+            int(value[0]) if isinstance(value, (list, tuple)) else int(value)
+            for value in (record.get("order_line") or [])
+        ]
+        raw_lines = (
+            self._call(
+                "sale.order.line",
+                "read",
+                [line_ids],
+                {
+                    "fields": [
+                        "id",
+                        "product_id",
+                        "name",
+                        "product_uom_qty",
+                        "price_unit",
+                        "price_subtotal",
+                        "display_type",
+                    ]
+                },
+                proxy=proxy,
+            )
+            if line_ids
+            else []
+        )
+        product_ids = sorted({_many2one_id(line.get("product_id")) for line in raw_lines if _many2one_id(line.get("product_id"))})
+        product_records = (
+            self._call(
+                "product.product",
+                "read",
+                [product_ids],
+                {"fields": ["id", "default_code"]},
+                proxy=proxy,
+            )
+            if product_ids
+            else []
+        )
+        code_by_id = {int(item["id"]): str(item.get("default_code") or "") for item in product_records}
+        lines: list[dict[str, Any]] = []
+        for line in raw_lines:
+            if line.get("display_type"):
+                continue
+            product_id = _many2one_id(line.get("product_id"))
+            lines.append(
+                {
+                    "id": int(line["id"]),
+                    "product_id": product_id,
+                    "code": code_by_id.get(product_id, ""),
+                    "name": str(line.get("name") or "Producto"),
+                    "quantity": float(line.get("product_uom_qty") or 0),
+                    "unit_price": float(line.get("price_unit") or 0),
+                    "subtotal": float(line.get("price_subtotal") or 0),
+                }
+            )
+        partner = record.get("partner_id")
+        return {
+            "id": int(record["id"]),
+            "folio": str(record.get("name") or f"SO-{record['id']}"),
+            "customer_id": _many2one_id(partner),
+            "customer_name": _many2one_name(partner, "Cliente"),
+            "amount_total": float(record.get("amount_total") or 0),
+            "subtotal": float(record.get("amount_untaxed") or 0),
+            "tax": float(record.get("amount_tax") or 0),
+            "state": state,
+            "state_label": STATE_LABELS.get(state, state.capitalize()),
+            "editable": state in EDITABLE_ORDER_STATES,
+            "editable_reason": "" if state in EDITABLE_ORDER_STATES else "Odoo ya no permite editar este pedido porque está confirmado, entregado o cancelado.",
+            "note": str(record.get("note") or ""),
+            "date_order": str(record.get("date_order") or ""),
+            "client_order_ref": str(record.get("client_order_ref") or ""),
+            "lines": lines,
+        }
+
+    def update_order(self, order_id: int, request: UpdateOrderRequest, *, seller: Seller) -> OrderResult:
+        proxy = self._models()
+        records = self._call(
+            "sale.order",
+            "search_read",
+            [[("id", "=", int(order_id)), ("user_id", "=", seller.id)]],
+            {"fields": ["id", "state"], "limit": 1},
+            proxy=proxy,
+        )
+        if not records:
+            raise ValueError("No encontramos el pedido o no pertenece a tu usuario.")
+        state = str(records[0].get("state") or "draft")
+        if state not in EDITABLE_ORDER_STATES:
+            raise ValueError("Este pedido ya está confirmado o cerrado y no se puede editar desde la app.")
+        self._customer_record(request.customer_id, proxy=proxy)
+        self._validate_products(request, proxy=proxy)
+        values: dict[str, Any] = {
+            "partner_id": request.customer_id,
+            "order_line": [(5, 0, 0), *self._order_lines(request)],
+            "note": request.note or False,
+        }
+        self._call("sale.order", "write", [[int(order_id)], values], proxy=proxy)
+        result_fields = ["id", "name", "state", "amount_untaxed", "amount_tax", "amount_total"]
+        updated = self._call("sale.order", "read", [[int(order_id)]], {"fields": result_fields}, proxy=proxy)
+        record = dict(updated[0]) if updated else {"id": order_id, "state": state}
+        return self._from_record(record, recovered=False, status_override="Pedido actualizado")
+
 
 
 def whatsapp_summary(
     customer_name: str,
-    request: CreateOrderRequest,
+    request: CreateOrderRequest | UpdateOrderRequest,
     products: dict[int, str],
     *,
     seller_name: str = "",
