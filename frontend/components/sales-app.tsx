@@ -2897,19 +2897,36 @@ function NewClientDialog({ open, busy, error, onClose, onSubmit }: { open: boole
 }
 
 function PromoDialog({ product, onClose, onAdd }: { product: Product | null; onClose: () => void; onAdd: (paid: number, free: number) => void }) {
-  const [paid, setPaid] = useState(1);
-  const [free, setFree] = useState(1);
-  useEffect(() => { setPaid(1); setFree(1); }, [product]);
+  const [paid, setPaid] = useState("1");
+  const [free, setFree] = useState("1");
+  useEffect(() => { setPaid("1"); setFree("1"); }, [product]);
   const presets = [[1, 1], [2, 1], [2, 2], [4, 1], [10, 2], [11, 1]];
+  const cleanPromoInput = (value: string) => value.replace(/\D/g, "").replace(/^0+(?=\d)/, "").slice(0, 3);
+  const normalizePromoQuantity = (value: string) => {
+    const numeric = Number.parseInt(value, 10);
+    if (!Number.isFinite(numeric) || numeric < 1) return 1;
+    return Math.min(numeric, 999);
+  };
+  const paidQuantity = paid ? normalizePromoQuantity(paid) : null;
+  const freeQuantity = free ? normalizePromoQuantity(free) : null;
+  const canAddPromotion = paidQuantity !== null && freeQuantity !== null;
+  const applyPromotion = () => {
+    if (!canAddPromotion) {
+      setPaid(String(normalizePromoQuantity(paid)));
+      setFree(String(normalizePromoQuantity(free)));
+      return;
+    }
+    onAdd(paidQuantity, freeQuantity);
+  };
   return (
     <AnimatePresence>
       {product && <motion.div className="dialog-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
         <motion.section role="dialog" aria-modal="true" aria-labelledby="promo-title" className="dialog-sheet compact-dialog" initial={{ opacity: 0, y: 32 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 32 }} transition={{ type: "spring", stiffness: 300, damping: 30 }}>
           <div className="dialog-head"><div><span className="eyebrow">Promoción</span><h2 id="promo-title">{product.name}</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="Cerrar"><X /></button></div>
-          <div className="preset-grid">{presets.map(([sale, gift]) => <button type="button" key={`${sale}-${gift}`} className={paid === sale && free === gift ? "active" : ""} onClick={() => { setPaid(sale); setFree(gift); }}>{sale}+{gift}</button>)}</div>
-          <div className="promo-quantities"><label><span>Unidades con precio</span><input type="number" min="1" max="999" value={paid} onChange={(event) => setPaid(Math.max(1, Number(event.target.value)))} /></label><label><span>Unidades gratis</span><input type="number" min="1" max="999" value={free} onChange={(event) => setFree(Math.max(1, Number(event.target.value)))} /></label></div>
-          <div className="promo-summary"><span>{paid} × {money(product.price)}</span><strong>+ {free} gratis</strong></div>
-          <button type="button" className="button primary wide" onClick={() => onAdd(paid, free)}><Sparkles /> Agregar promoción</button>
+          <div className="preset-grid">{presets.map(([sale, gift]) => <button type="button" key={`${sale}-${gift}`} className={paidQuantity === sale && freeQuantity === gift ? "active" : ""} onClick={() => { setPaid(String(sale)); setFree(String(gift)); }}>{sale}+{gift}</button>)}</div>
+          <div className="promo-quantities"><label><span>Unidades con precio</span><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={3} value={paid} placeholder="1" onChange={(event) => setPaid(cleanPromoInput(event.target.value))} onBlur={() => setPaid(String(normalizePromoQuantity(paid)))} /></label><label><span>Unidades gratis</span><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={3} value={free} placeholder="1" onChange={(event) => setFree(cleanPromoInput(event.target.value))} onBlur={() => setFree(String(normalizePromoQuantity(free)))} /></label></div>
+          <div className="promo-summary"><span>{paidQuantity ?? "—"} × {money(product.price)}</span><strong>+ {freeQuantity ?? "—"} gratis</strong></div>
+          <button type="button" className="button primary wide" onClick={applyPromotion} disabled={!canAddPromotion}><Sparkles /> Agregar promoción</button>
         </motion.section>
       </motion.div>}
     </AnimatePresence>
