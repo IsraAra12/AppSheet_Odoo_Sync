@@ -237,7 +237,7 @@ def alta_cliente_odoo(
     valores: dict[str, Any] = {
         **datos,
         "customer_rank": 1,
-        "company_type": "person",
+        "is_company": False,
         "type": "contact",
         "active": True,
     }
