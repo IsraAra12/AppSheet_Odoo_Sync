@@ -17,3 +17,6 @@ frontend/*.tsbuildinfo
 output/
 tmp/
 take_screenshot.py
+# Scripts locales de prueba: pueden contener usuarios y NIPs reales.
+/scratch_*.py
+/test_admin.py
