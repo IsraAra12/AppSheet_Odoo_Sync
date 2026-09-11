@@ -90,6 +90,9 @@ import {
   syncOutboxItem,
   updateOutboxStatus,
 } from "@/lib/outbox";
+import { money, odooDate } from "@/lib/format";
+import { downloadStatementPdf } from "@/lib/statement-pdf";
+import { createPricing, type Pricing, type TaxStatus } from "@/lib/taxes";
 import type {
   CartLine,
   Catalog,
@@ -117,6 +120,11 @@ const DRAFT_KEY = "rapyvet_order_draft_v2";
 const CATALOG_KEY = "rapyvet_catalog_v2";
 const FIRST_USE_TUTORIAL_KEY = "rapyvet_first_use_tutorial_seen_v2";
 const VISIBLE_STEP = 30;
+const TAX_STATUS_LABEL: Record<TaxStatus, string> = {
+  taxed: "Precio con IVA",
+  untaxed: "Sin impuestos",
+  unknown: "Precio sin IVA",
+};
 
 const pageMotion = {
 
@@ -124,14 +132,6 @@ const pageMotion = {
   animate: { opacity: 1, x: 0 },
   exit: { opacity: 0, x: -8 },
 };
-
-function money(value: number) {
-  return new Intl.NumberFormat("es-MX", {
-    style: "currency",
-    currency: "MXN",
-    minimumFractionDigits: 2,
-  }).format(value);
-}
 
 function normalize(value: string) {
   return value
@@ -1053,6 +1053,7 @@ function HomeScreen({
   customer,
   seller,
   cart,
+  pricing,
   pendingCount = 0,
   onStart,
   onProducts,
@@ -1064,6 +1065,7 @@ function HomeScreen({
   customer?: Client;
   seller?: Seller;
   cart: CartLine[];
+  pricing: Pricing;
   pendingCount?: number;
   onStart: () => void;
   onProducts: () => void;
@@ -1073,7 +1075,7 @@ function HomeScreen({
   onStatement?: () => void;
 }) {
   const units = cart.reduce((sum, line) => sum + line.quantity, 0);
-  const total = cart.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
+  const total = pricing.order(cart).total;
   return (
     <div className="screen home-screen">
       <section className="hero-panel dashboard-hero">
@@ -1107,7 +1109,7 @@ function HomeScreen({
           <span className="summary-icon"><ShoppingBag /></span>
           <small>Pedido actual</small>
           <strong>{units ? `${units} unidades` : "Carrito vacío"}</strong>
-          <span className="text-link">{cart.length ? money(total) : "Agregar productos"} <ChevronRight size={15} /></span>
+          <span className="text-link">{cart.length ? `${money(total)} con IVA` : "Agregar productos"} <ChevronRight size={15} /></span>
         </button>
         <button type="button" className="summary-card" onClick={onOutbox}>
           <span className="summary-icon"><Inbox /></span>
@@ -1223,6 +1225,7 @@ function ClientScreen({
 function ProductScreen({
   products,
   cart,
+  pricing,
   onAdd,
   onDecrease,
   onPromo,
@@ -1230,6 +1233,7 @@ function ProductScreen({
 }: {
   products: Product[];
   cart: CartLine[];
+  pricing: Pricing;
   onAdd: (product: Product) => void;
   onDecrease: (product: Product) => void;
   onPromo: (product: Product) => void;
@@ -1259,7 +1263,7 @@ function ProductScreen({
     );
   }, [products, deferredQuery]);
   const cartCount = cart.reduce((sum, line) => sum + line.quantity, 0);
-  const cartTotal = cart.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
+  const cartTotal = pricing.order(cart).total;
 
   useEffect(() => setVisible(VISIBLE_STEP), [deferredQuery]);
 
@@ -1308,8 +1312,8 @@ function ProductScreen({
                   <h2>{product.name}</h2>
                   <div className="product-price-row">
                     <div className="product-price">
-                      <strong>{money(product.price)}</strong>
-                      <small>Precio de lista</small>
+                      <strong>{money(pricing.unit(product.id, product.price))}</strong>
+                      <small>{TAX_STATUS_LABEL[pricing.taxStatus(product.id)]}</small>
                     </div>
                     {totalQuantity > 0 && (
                       <motion.span
@@ -1408,7 +1412,7 @@ function ProductScreen({
               <ShoppingBag />
               <b>{cartCount}</b>
             </span>
-            <span><small>Pedido actual</small><strong>{money(cartTotal)}</strong></span>
+            <span><small>Pedido actual · con IVA</small><strong>{money(cartTotal)}</strong></span>
             <em>Revisar <ArrowRight /></em>
           </motion.button>
         )}
@@ -1419,18 +1423,20 @@ function ProductScreen({
 
 function CartScreen({
   cart,
+  pricing,
   onChange,
   onRemove,
   onProducts,
   onReview,
 }: {
   cart: CartLine[];
+  pricing: Pricing;
   onChange: (id: string, patch: Partial<CartLine>) => void;
   onRemove: (id: string) => void;
   onProducts: () => void;
   onReview: () => void;
 }) {
-  const total = cart.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
+  const totals = pricing.order(cart);
   return (
     <div className="screen cart-screen">
       <div className="screen-title-row"><div><span className="eyebrow">Tu selección</span><h1>Carrito</h1><p>Confirma cantidades y precios antes de continuar.</p></div><button type="button" className="button secondary" onClick={onProducts}><Plus /> Agregar más</button></div>
@@ -1457,14 +1463,14 @@ function CartScreen({
                       <strong>{line.quantity}</strong>
                       <button type="button" onClick={() => onChange(line.id, { quantity: line.quantity + 1 })}><Plus /></button>
                     </div>
-                    <label className="price-input"><span>Precio unitario</span><div><small>$</small><input type="number" min="0" step="0.01" value={line.unitPrice} disabled={line.free} onChange={(event) => onChange(line.id, { unitPrice: Math.max(0, Number(event.target.value)) })} /></div></label>
-                    <div className="line-total"><span>Importe</span><strong>{money(line.quantity * line.unitPrice)}</strong></div>
+                    <label className="price-input"><span>Precio sin IVA</span><div><small>$</small><input type="number" min="0" step="0.01" value={line.unitPrice} disabled={line.free} onChange={(event) => onChange(line.id, { unitPrice: Math.max(0, Number(event.target.value)) })} /></div>{!line.free && <small className="price-hint">{pricing.taxStatus(line.productId) === "taxed" ? `Con IVA ${money(pricing.unit(line.productId, line.unitPrice))} c/u` : TAX_STATUS_LABEL[pricing.taxStatus(line.productId)]}</small>}</label>
+                    <div className="line-total"><span>Importe con IVA</span><strong>{money(pricing.line(line).total)}</strong></div>
                   </div>
                 </motion.article>
               ))}
             </AnimatePresence>
           </motion.div>
-          <section className="total-card"><div><span>Subtotal estimado</span><small>Odoo calculará impuestos y total final.</small></div><strong>{money(total)}</strong></section>
+          <section className="total-card"><div><span>Total con IVA</span><small>Subtotal {money(totals.untaxed)} · Impuestos {money(totals.tax)}</small><small>Odoo confirma el total final al crear el pedido.</small></div><strong>{money(totals.total)}</strong></section>
           <button type="button" className="button primary wide checkout-button" onClick={onReview}><ClipboardCheck /> Revisar pedido <ArrowRight /></button>
         </>
       )}
@@ -1475,6 +1481,7 @@ function CartScreen({
 function ReviewScreen({
   customer,
   cart,
+  pricing,
   note,
   busy,
   error,
@@ -1484,6 +1491,7 @@ function ReviewScreen({
 }: {
   customer: Client;
   cart: CartLine[];
+  pricing: Pricing;
   note: string;
   busy: boolean;
   error: string;
@@ -1491,17 +1499,17 @@ function ReviewScreen({
   onBack: () => void;
   onSubmit: () => void;
 }) {
-  const estimated = cart.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
+  const totals = pricing.order(cart);
   return (
     <div className="screen review-screen">
       <button type="button" className="back-link" onClick={onBack}><ArrowLeft /> Volver al carrito</button>
       <div className="screen-title-row"><div><span className="eyebrow">Paso 3 de 3</span><h1>Revisa el pedido</h1><p>El pedido se conservará si la conexión tarda o se interrumpe.</p></div></div>
       <div className="review-grid">
         <section className="review-card"><span className="review-icon"><UserRound /></span><div><small>Cliente</small><h2>{customer.name}</h2><p>{[customer.street, customer.city, customer.email].filter(Boolean).join(" · ")}</p></div></section>
-        <section className="review-card products-review"><span className="review-icon"><ShoppingBag /></span><div className="review-body"><small>Productos</small><h2>{cart.reduce((sum, line) => sum + line.quantity, 0)} unidades</h2><ul>{cart.map((line) => <li key={line.id}><span>{line.quantity} × {line.name}{line.free ? " · Gratis" : ""}</span><strong>{money(line.quantity * line.unitPrice)}</strong></li>)}</ul></div></section>
+        <section className="review-card products-review"><span className="review-icon"><ShoppingBag /></span><div className="review-body"><small>Productos</small><h2>{cart.reduce((sum, line) => sum + line.quantity, 0)} unidades</h2><ul>{cart.map((line) => <li key={line.id}><span>{line.quantity} × {line.name}{line.free ? " · Gratis" : ""}</span><strong>{money(pricing.line(line).total)}</strong></li>)}</ul></div></section>
       </div>
       <label className="note-field"><span>Notas para el pedido <small>Opcional</small></span><textarea value={note} onChange={(event) => onNote(event.target.value)} maxLength={2000} placeholder="Horario de entrega, referencias u observaciones…" /></label>
-      <section className="order-total"><div><span>Total estimado</span><small>El total definitivo se confirma en Odoo.</small></div><strong>{money(estimated)}</strong></section>
+      <section className="order-total"><div><span>Total con IVA</span><small>Subtotal {money(totals.untaxed)} · Impuestos {money(totals.tax)}</small><small>El total definitivo se confirma en Odoo.</small></div><strong>{money(totals.total)}</strong></section>
       <AnimatePresence initial={false}>{error && <motion.p className="submit-error" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}><CircleAlert /> {error}</motion.p>}</AnimatePresence>
       <button type="button" className="button primary wide submit-order" disabled={busy} onClick={onSubmit}>{busy ? <LoaderCircle className="spin" /> : <BadgeCheck />}{busy ? "Enviando a Odoo…" : "Crear pedido en Odoo"}</button>
       <p className="idempotency-note">Puedes reintentar con seguridad: esta captura tiene una referencia única que evita pedidos duplicados.</p>
@@ -1533,176 +1541,9 @@ function SuccessScreen({ result, onNew, title = "Pedido registrado" }: { result:
 
 function statementDate(value: string) {
   if (!value) return "Sin fecha";
-  const parsed = new Date(value.replace(" ", "T") + (value.includes("T") ? "" : "Z"));
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("es-MX", { dateStyle: "medium" });
-}
-
-function safePdfText(value: string) {
-  return value
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
-    .replace(/[–—]/g, "-")
-    .replace(/•/g, "-")
-    .replace(/[^\x09\x0A\x0D\x20-\xFF]/g, "?");
-}
-
-function pdfString(value: string) {
-  return `(${safePdfText(value).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)").replace(/[\r\n]+/g, " ")})`;
-}
-
-function pdfByteLength(value: string) {
-  return value.length;
-}
-
-function pdfBytes(value: string) {
-  const bytes = new Uint8Array(value.length);
-  for (let index = 0; index < value.length; index += 1) bytes[index] = value.charCodeAt(index) & 0xff;
-  return bytes;
-}
-
-function buildStatementPdf(statement: CustomerStatement) {
-  const width = 612;
-  const height = 792;
-  const margin = 46;
-  const bottom = 54;
-  const rows = statement.lines.length ? statement.lines : [];
-  const pages: string[] = [];
-  let current = "";
-  let y = height - margin;
-  let pageNumber = 0;
-
-  const text = (value: string, x: number, size = 10, bold = false, color = "0.14 0.10 0.16") => {
-    current += `${color} rg BT /${bold ? "F2" : "F1"} ${size} Tf ${x} ${y} Td ${pdfString(value)} Tj ET\n`;
-  };
-  const line = (yPosition = y, color = "0.72 0.51 0.76") => {
-    current += `${color} RG 0.6 w ${margin} ${yPosition} m ${width - margin} ${yPosition} l S\n`;
-  };
-  const box = (x: number, yPosition: number, boxWidth: number, boxHeight: number, color = "0.97 0.91 0.98") => {
-    current += `${color} rg ${x} ${yPosition} ${boxWidth} ${boxHeight} re f\n`;
-  };
-  const startPage = () => {
-    if (current) {
-      text(`Pagina ${pageNumber}`, width - 106, 8, false);
-      pages.push(current);
-    }
-    pageNumber += 1;
-    current = "0.995 0.980 1.000 rg 0 0 612 792 re f\n";
-    current += "0.11 0.06 0.13 rg 0 704 612 88 re f\n";
-    y = height - margin + 4;
-    text("RapyVet", margin, 22, true, "1 1 1");
-    y -= 24;
-    text("Distribuidor veterinario", margin, 11, false, "0.94 0.70 0.96");
-    y -= 18;
-    line();
-    y -= 28;
-  };
-  const tableHeader = () => {
-    box(margin - 8, y - 7, width - margin * 2 + 16, 20, "0.91 0.82 0.93");
-    text("Documento", margin, 9, true, "0.26 0.12 0.30");
-    text("Vencimiento", 316, 9, true, "0.26 0.12 0.30");
-    text("Estado", 405, 9, true, "0.26 0.12 0.30");
-    text("Saldo abierto", 488, 9, true, "0.26 0.12 0.30");
-    y -= 11;
-    line(y, "0.72 0.51 0.76");
-    y -= 16;
-  };
-
-  startPage();
-  text("Estado de cuenta", margin, 18, true, "0.26 0.12 0.30");
-  y -= 24;
-  text(statement.customer.name || "Cliente", margin, 12, true);
-  y -= 17;
-  text(`Generado: ${new Date(statement.generated_at * 1000).toLocaleString("es-MX")}`, margin, 10, false, "0.38 0.32 0.40");
-  y -= 26;
-  box(margin - 8, y - 18, width - margin * 2 + 16, 44, "0.95 0.88 0.96");
-  text(`Saldo pendiente: ${money(statement.total_due)}`, margin, 13, true, "0.20 0.10 0.24");
-  text(`Vencido: ${money(statement.overdue_due)}`, 250, 13, true, "0.42 0.10 0.16");
-  text(`Saldo a favor: ${money(statement.credit_balance)}`, 410, 13, true, "0.10 0.34 0.20");
-  y -= 34;
-  line(y, "0.72 0.51 0.76");
-  y -= 24;
-  text("Movimientos abiertos", margin, 14, true, "0.26 0.12 0.30");
-  y -= 24;
-  tableHeader();
-
-  if (!rows.length) {
-    text("Sin movimientos abiertos. Cuenta al corriente.", margin, 11);
-  } else {
-    for (const row of rows) {
-      if (y < bottom + 42) {
-        startPage();
-        text("Movimientos abiertos", margin, 14, true, "0.26 0.12 0.30");
-        y -= 24;
-        tableHeader();
-      }
-      text((row.document || row.label || "Movimiento").slice(0, 43), margin, 9, true);
-      text(statementDate(row.due_date), 316, 9, false, "0.30 0.26 0.32");
-      text(row.status || "Pendiente", 405, 9, false, row.status === "Vencido" ? "0.62 0.10 0.16" : row.status === "A favor" ? "0.10 0.40 0.24" : "0.30 0.26 0.32");
-      text(money(row.open_amount), 488, 9, true);
-      y -= 14;
-      if (row.reference || row.label) {
-        text(`${row.label || ""}${row.reference ? ` · Ref. ${row.reference}` : ""}`.slice(0, 70), margin, 8, false, "0.44 0.38 0.46");
-        y -= 12;
-      }
-      line(y + 4, "0.86 0.77 0.88");
-      y -= 9;
-    }
-  }
-  y = Math.max(y - 18, bottom + 22);
-  text("Solo consulta: los pagos se aplican unicamente en Odoo.", margin, 9, false, "0.42 0.34 0.45");
-  text(`Pagina ${pageNumber}`, width - 106, 8, false);
-  pages.push(current);
-
-  const pageObjectNumbers = pages.map((_, index) => 3 + index * 2);
-  const fontRegularObject = 3 + pages.length * 2;
-  const fontBoldObject = fontRegularObject + 1;
-  const objects: string[] = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    `<< /Type /Pages /Kids [${pageObjectNumbers.map((objectNumber) => `${objectNumber} 0 R`).join(" ")}] /Count ${pages.length} >>`,
-  ];
-
-  pages.forEach((content, index) => {
-    const pageObject = pageObjectNumbers[index];
-    const contentObject = pageObject + 1;
-    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontRegularObject} 0 R /F2 ${fontBoldObject} 0 R >> >> /Contents ${contentObject} 0 R >>`);
-    objects.push(`<< /Length ${pdfByteLength(content)} >>\nstream\n${content}endstream`);
-  });
-  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
-  objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
-
-  let pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
-  const offsets = [0];
-  objects.forEach((object, index) => {
-    offsets.push(pdfByteLength(pdf));
-    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
-  });
-  const xrefOffset = pdfByteLength(pdf);
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (let index = 1; index <= objects.length; index += 1) {
-    pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
-  }
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-
-  return new Blob([pdfBytes(pdf)], { type: "application/pdf" });
-}
-
-function downloadStatementPdf(statement: CustomerStatement) {
-  const filenameBase = safePdfText(statement.customer.name || "cliente")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 52) || "cliente";
-  const blob = buildStatementPdf(statement);
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `estado-cuenta-${filenameBase}.pdf`;
-  anchor.rel = "noopener";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  // Odoo envía fechas sin hora; interpretarlas como UTC las recorría un día en México.
+  const parsed = odooDate(value);
+  return parsed ? parsed.toLocaleDateString("es-MX", { dateStyle: "medium" }) : value;
 }
 
 function StatementScreen({
@@ -1790,12 +1631,14 @@ function OrderEditScreen({
   orderId,
   clients,
   products,
+  pricing,
   onBack,
   onSaved,
 }: {
   orderId: number;
   clients: Client[];
   products: Product[];
+  pricing: Pricing;
   onBack: () => void;
   onSaved: (result: OrderResult) => void;
 }) {
@@ -1866,7 +1709,7 @@ function OrderEditScreen({
       .slice(0, 8);
   }, [products, deferredQuery]);
 
-  const total = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
+  const totals = pricing.order(lines);
 
   function addProduct(product: Product) {
     setLines((current) => {
@@ -2017,7 +1860,7 @@ function OrderEditScreen({
                 <button type="button" key={product.id} onClick={() => addProduct(product)}>
                   <span>
                     <strong>{product.name}</strong>
-                    <small>{product.code} · {money(product.price)}</small>
+                    <small>{product.code} · {money(pricing.unit(product.id, product.price))} con IVA</small>
                   </span>
                   <Plus size={17} />
                 </button>
@@ -2031,7 +1874,7 @@ function OrderEditScreen({
               <article className="editor-line" key={line.id}>
                 <div className="editor-line-copy">
                   <strong>{line.name}</strong>
-                  <small>{line.code || "Sin código"} · {line.unitPrice === 0 ? "Sin cargo" : money(line.unitPrice)}</small>
+                  <small>{line.code || "Sin código"} · {line.unitPrice === 0 ? "Sin cargo" : `${money(pricing.unit(line.productId, line.unitPrice))} c/u con IVA · Importe ${money(pricing.line(line).total)}`}</small>
                 </div>
                 <div className="editor-line-actions">
                   <div className="stepper mini-stepper" aria-label={`Cantidad de ${line.name}`}>
@@ -2052,7 +1895,7 @@ function OrderEditScreen({
                     </button>
                   </div>
                   <label className="price-input editor-price-input">
-                    <span>Precio</span>
+                    <span>Precio sin IVA</span>
                     <div>
                       <small>$</small>
                       <input
@@ -2094,7 +1937,7 @@ function OrderEditScreen({
         </label>
 
         <div className="editor-total">
-          <span>Total estimado<strong>{money(total)}</strong></span>
+          <span>Total con IVA<strong>{money(totals.total)}</strong><small className="editor-total-breakdown">Subtotal {money(totals.untaxed)} · Impuestos {money(totals.tax)}</small></span>
           {detail.editable && (
             <button type="button" className="button primary" onClick={() => void save()} disabled={busy || !lines.length || !selectedCustomerId}>
               {busy ? <LoaderCircle className="spin" /> : <BadgeCheck />}
@@ -2450,7 +2293,7 @@ function OutboxScreen({
                   <div className="outbox-details">
                     <span>{item.items_count} unidades</span>
                     <span>·</span>
-                    <strong>{money(item.total_amount)}</strong>
+                    <strong>{money(item.result?.total ?? item.total_amount)} con IVA</strong>
                   </div>
                   {item.note && <p className="outbox-note">Nota: {item.note}</p>}
                   {item.error_message && (
@@ -2896,7 +2739,7 @@ function NewClientDialog({ open, busy, error, onClose, onSubmit }: { open: boole
   );
 }
 
-function PromoDialog({ product, onClose, onAdd }: { product: Product | null; onClose: () => void; onAdd: (paid: number, free: number) => void }) {
+function PromoDialog({ product, pricing, onClose, onAdd }: { product: Product | null; pricing: Pricing; onClose: () => void; onAdd: (paid: number, free: number) => void }) {
   const [paid, setPaid] = useState("1");
   const [free, setFree] = useState("1");
   useEffect(() => { setPaid("1"); setFree("1"); }, [product]);
@@ -2925,7 +2768,7 @@ function PromoDialog({ product, onClose, onAdd }: { product: Product | null; onC
           <div className="dialog-head"><div><span className="eyebrow">Promoción</span><h2 id="promo-title">{product.name}</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="Cerrar"><X /></button></div>
           <div className="preset-grid">{presets.map(([sale, gift]) => <button type="button" key={`${sale}-${gift}`} className={paidQuantity === sale && freeQuantity === gift ? "active" : ""} onClick={() => { setPaid(String(sale)); setFree(String(gift)); }}>{sale}+{gift}</button>)}</div>
           <div className="promo-quantities"><label><span>Unidades con precio</span><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={3} value={paid} placeholder="1" onChange={(event) => setPaid(cleanPromoInput(event.target.value))} onBlur={() => setPaid(String(normalizePromoQuantity(paid)))} /></label><label><span>Unidades gratis</span><input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={3} value={free} placeholder="1" onChange={(event) => setFree(cleanPromoInput(event.target.value))} onBlur={() => setFree(String(normalizePromoQuantity(free)))} /></label></div>
-          <div className="promo-summary"><span>{paidQuantity ?? "—"} × {money(product.price)}</span><strong>+ {freeQuantity ?? "—"} gratis</strong></div>
+          <div className="promo-summary"><span>{paidQuantity ?? "—"} × {money(pricing.unit(product.id, product.price))} con IVA</span><strong>+ {freeQuantity ?? "—"} gratis</strong></div>
           <button type="button" className="button primary wide" onClick={applyPromotion} disabled={!canAddPromotion}><Sparkles /> Agregar promoción</button>
         </motion.section>
       </motion.div>}
@@ -2964,6 +2807,7 @@ export function SalesApp() {
   const [successTitle, setSuccessTitle] = useState("Pedido registrado");
   const pwaInstall = usePwaInstall();
   const mainRef = useRef<HTMLElement>(null);
+  const pricing = useMemo(() => createPricing(catalog?.products ?? [], catalog?.taxes ?? []), [catalog]);
 
 
   useEffect(() => {
@@ -3143,6 +2987,7 @@ export function SalesApp() {
       lines: cart,
       note,
       idempotencyKey,
+      totalAmount: pricing.order(cart).total,
       status: "sending",
     });
 
@@ -3293,6 +3138,7 @@ export function SalesApp() {
                   customer={customer}
                   seller={session.seller}
                   cart={cart}
+                  pricing={pricing}
                   pendingCount={pendingCount}
                   onStart={() => setScreen("clients")}
                   onProducts={() => setScreen(customer ? "products" : "clients")}
@@ -3303,13 +3149,13 @@ export function SalesApp() {
                 />
               )}
               {screen === "clients" && <ClientScreen clients={catalog.clients} selectedId={customerId} onSelect={selectClient} onStatement={openStatement} onNew={() => { setClientError(""); setNewClientOpen(true); }} />}
-              {screen === "products" && <ProductScreen products={catalog.products} cart={cart} onAdd={addProduct} onDecrease={decreaseProduct} onPromo={setPromoProduct} onCart={() => setScreen("cart")} />}
-              {screen === "cart" && <CartScreen cart={cart} onChange={updateLine} onRemove={removeLine} onProducts={() => setScreen(customer ? "products" : "clients")} onReview={() => customer ? setScreen("review") : setScreen("clients")} />}
-              {screen === "review" && customer && <ReviewScreen customer={customer} cart={cart} note={note} busy={submitBusy} error={submitError} onNote={setNote} onBack={() => setScreen("cart")} onSubmit={() => void submitOrder()} />}
+              {screen === "products" && <ProductScreen products={catalog.products} cart={cart} pricing={pricing} onAdd={addProduct} onDecrease={decreaseProduct} onPromo={setPromoProduct} onCart={() => setScreen("cart")} />}
+              {screen === "cart" && <CartScreen cart={cart} pricing={pricing} onChange={updateLine} onRemove={removeLine} onProducts={() => setScreen(customer ? "products" : "clients")} onReview={() => customer ? setScreen("review") : setScreen("clients")} />}
+              {screen === "review" && customer && <ReviewScreen customer={customer} cart={cart} pricing={pricing} note={note} busy={submitBusy} error={submitError} onNote={setNote} onBack={() => setScreen("cart")} onSubmit={() => void submitOrder()} />}
               {screen === "success" && orderResult && <SuccessScreen result={orderResult} title={successTitle} onNew={startNewOrder} />}
               {screen === "history" && <HistoryScreen seller={session.seller} onRefresh={() => void loadCatalog(false)} onEdit={openOrderEditor} />}
               {screen === "statement" && statementCustomerId && <StatementScreen customerId={statementCustomerId} initialCustomer={catalog.clients.find((item) => item.id === statementCustomerId)} onBack={() => setScreen("clients")} />}
-              {screen === "orderEdit" && editingOrderId && <OrderEditScreen orderId={editingOrderId} clients={catalog.clients} products={catalog.products} onBack={() => setScreen("history")} onSaved={(result) => { setOrderResult(result); setSuccessTitle("Pedido actualizado"); setEditingOrderId(null); setScreen("success"); setToast("Pedido actualizado en Odoo"); }} />}
+              {screen === "orderEdit" && editingOrderId && <OrderEditScreen orderId={editingOrderId} clients={catalog.clients} products={catalog.products} pricing={pricing} onBack={() => setScreen("history")} onSaved={(result) => { setOrderResult(result); setSuccessTitle("Pedido actualizado"); setEditingOrderId(null); setScreen("success"); setToast("Pedido actualizado en Odoo"); }} />}
               {screen === "outbox" && <OutboxScreen onNewOrder={startNewOrder} onNavigateHome={() => setScreen("home")} />}
             </motion.div>
           </AnimatePresence>
@@ -3346,7 +3192,7 @@ export function SalesApp() {
       />
       <InstallHelpDialog open={pwaInstall.helpOpen} onClose={() => pwaInstall.setHelpOpen(false)} />
       <NewClientDialog open={newClientOpen} busy={clientBusy} error={clientError} onClose={() => setNewClientOpen(false)} onSubmit={(data) => void submitNewClient(data)} />
-      <PromoDialog product={promoProduct} onClose={() => setPromoProduct(null)} onAdd={addPromotion} />
+      <PromoDialog product={promoProduct} pricing={pricing} onClose={() => setPromoProduct(null)} onAdd={addPromotion} />
       <FirstUseTutorial
         open={tutorialOpen}
         seller={session.seller}

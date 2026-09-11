@@ -5,7 +5,7 @@ from typing import Any
 
 from backend.config import Settings
 from backend.odoo_service import OdooService, Seller
-from backend.schemas import CreateOrderRequest, OrderLine
+from backend.schemas import CatalogResponse, CreateOrderRequest, OrderLine
 
 
 class FakeOdooService(OdooService):
@@ -108,6 +108,26 @@ class BackendOrderTests(unittest.TestCase):
         self.assertEqual(orders[0]["customer_name"], "Veterinaria El Sol")
         self.assertEqual(orders[0]["state_label"], "Pedido de venta")
         self.assertEqual(orders[0]["amount_total"], 450.50)
+
+    def test_catalog_includes_taxes_for_prices_with_iva(self) -> None:
+        service = FakeOdooService()
+
+        def custom_call(model: str, method: str, args: list[Any], kwargs: dict[str, Any] | None = None, **_: Any) -> Any:
+            if model == "res.partner":
+                return []
+            if model == "product.product":
+                return [{"id": 5, "default_code": "NX1", "name": "NexGard", "list_price": 100, "taxes_id": [1]}]
+            if model == "account.tax":
+                return [{"id": 1, "name": "IVA 16%", "amount": 16, "amount_type": "percent", "children_tax_ids": []}]
+            raise AssertionError(f"Unexpected call: {model}.{method}")
+
+        service._call = custom_call  # type: ignore[assignment]
+        catalog = service.catalog(force=True)
+
+        CatalogResponse(**catalog)
+        self.assertEqual(catalog["products"][0]["tax_ids"], [1])
+        self.assertEqual(catalog["taxes"][0]["amount"], 16.0)
+        self.assertTrue(catalog["taxes"][0]["is_base_affected"])
 
 
 if __name__ == "__main__":

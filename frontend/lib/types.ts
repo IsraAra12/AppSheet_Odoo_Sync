@@ -39,9 +39,23 @@ export type TemporarySellerKey = {
   must_change_password: boolean;
 };
 
+export type Tax = {
+  id: number;
+  name: string;
+  amount: number;
+  amount_type: string;
+  price_include: boolean;
+  include_base_amount: boolean;
+  is_base_affected: boolean;
+  sequence: number;
+  children_tax_ids: number[];
+};
+
 export type Catalog = {
   clients: Client[];
   products: Product[];
+  // Opcional: los catálogos guardados antes de esta versión no traen impuestos.
+  taxes?: Tax[];
   refreshed_at: number;
 };
 

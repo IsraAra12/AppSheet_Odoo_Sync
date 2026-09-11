@@ -52,11 +52,13 @@ export function enqueueOrder(params: {
   lines: CartLine[];
   note: string;
   idempotencyKey: string;
+  /** Total con IVA calculado por la app; si falta se usa el subtotal sin impuestos. */
+  totalAmount?: number;
   status?: OutboxStatus;
   result?: OrderResult;
   errorMessage?: string;
 }): OutboxItem {
-  const totalAmount = params.lines.reduce(
+  const totalAmount = params.totalAmount ?? params.lines.reduce(
     (acc, line) => acc + (line.free ? 0 : line.quantity * line.unitPrice),
     0,
   );

@@ -41,6 +41,31 @@ STATE_LABELS: dict[str, str] = {
 EDITABLE_ORDER_STATES = {"draft", "sent"}
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 RFC_RE = re.compile(r"^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$")
+TAX_FIELDS = [
+    "id",
+    "name",
+    "amount",
+    "amount_type",
+    "price_include",
+    "include_base_amount",
+    "is_base_affected",
+    "sequence",
+    "children_tax_ids",
+]
+
+
+def _tax_record(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(item["id"]),
+        "name": str(item.get("name") or "Impuesto"),
+        "amount": float(item.get("amount") or 0),
+        "amount_type": str(item.get("amount_type") or "percent"),
+        "price_include": bool(item.get("price_include")),
+        "include_base_amount": bool(item.get("include_base_amount")),
+        "is_base_affected": bool(item.get("is_base_affected", True)),
+        "sequence": int(item.get("sequence") or 0),
+        "children_tax_ids": [int(value) for value in item.get("children_tax_ids") or []],
+    }
 
 
 def _many2one_id(value: Any) -> int:
@@ -151,9 +176,22 @@ class ProductModel(BaseModel):
     tax_ids: list[int]
 
 
+class TaxModel(BaseModel):
+    id: int
+    name: str
+    amount: float
+    amount_type: str
+    price_include: bool
+    include_base_amount: bool
+    is_base_affected: bool
+    sequence: int
+    children_tax_ids: list[int]
+
+
 class CatalogResponse(BaseModel):
     clients: list[ClientModel]
     products: list[ProductModel]
+    taxes: list[TaxModel] = []
     refreshed_at: int
 
 
@@ -764,6 +802,17 @@ class AsyncOdooService:
                 "order": "default_code asc, name asc",
             },
         )
+        try:
+            taxes_raw = await self._call(
+                "account.tax",
+                "search_read",
+                [[("active", "=", True)]],
+                {"fields": TAX_FIELDS, "order": "sequence asc, id asc"},
+            )
+        except Exception:
+            # Sin el esquema fiscal la app muestra precios sin IVA; Odoo
+            # sigue calculando el total real del pedido.
+            taxes_raw = []
 
         clients = [
             {
@@ -797,7 +846,12 @@ class AsyncOdooService:
                 }
             )
 
-        result = {"clients": clients, "products": products, "refreshed_at": int(now)}
+        result = {
+            "clients": clients,
+            "products": products,
+            "taxes": [_tax_record(item) for item in taxes_raw],
+            "refreshed_at": int(now),
+        }
         self._catalog = (now, result)
         return result
 
@@ -1164,7 +1218,7 @@ class AsyncOdooService:
         values: dict[str, Any] = {
             **datos,
             "customer_rank": 1,
-            "company_type": "person",
+            "is_company": False,
             "type": "contact",
             "active": True,
         }
@@ -1183,9 +1237,14 @@ class AsyncOdooService:
         return _client_result(registro, created=True)
 
     @staticmethod
-    def _from_record(record: dict[str, Any], *, recovered: bool) -> OrderResult:
+    def _from_record(
+        record: dict[str, Any],
+        *,
+        recovered: bool,
+        status_override: str | None = None,
+    ) -> OrderResult:
         state = str(record.get("state") or "")
-        status_text = (
+        status_text = status_override or (
             "Pedido recuperado"
             if recovered and state in {"sale", "done"}
             else "Cotización recuperada"
@@ -1458,7 +1517,7 @@ class AsyncOdooService:
                 line_status = "A favor"
             lines.append({
                 "id": int(item["id"]),
-                "date": str(item.get("date") or item.get("invoice_date") or ""),
+                "date": str(item.get("invoice_date") or item.get("date") or ""),
                 "due_date": due_date,
                 "document": _many2one_name(item.get("move_id")) or str(item.get("move_name") or ""),
                 "label": str(item.get("name") or "Movimiento"),

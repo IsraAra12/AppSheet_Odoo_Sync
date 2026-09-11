@@ -70,9 +70,22 @@ class Product(BaseModel):
     tax_ids: list[int]
 
 
+class Tax(BaseModel):
+    id: int
+    name: str
+    amount: float
+    amount_type: str
+    price_include: bool
+    include_base_amount: bool
+    is_base_affected: bool
+    sequence: int
+    children_tax_ids: list[int]
+
+
 class CatalogResponse(BaseModel):
     clients: list[Client]
     products: list[Product]
+    taxes: list[Tax] = []
     refreshed_at: int
 
 

@@ -937,6 +937,7 @@ textarea:focus { border-color: rgba(253, 170, 249, 0.38); box-shadow: 0 0 0 3px 
 .price-input small { padding-left: 12px; color: var(--faint); }
 .price-input input { min-height: 44px; padding-left: 5px; border: 0; background: transparent; box-shadow: none; }
 .price-input input:disabled { color: var(--success); opacity: 1; }
+.price-input > .price-hint { padding-left: 0; font-size: 11px; font-weight: 700; }
 .line-total { min-width: 0; display: grid; justify-items: end; gap: 7px; }
 .line-total strong { font-size: 19px; }
 .total-card,
@@ -2089,6 +2090,12 @@ textarea:focus { border-color: rgba(253, 170, 249, 0.38); box-shadow: 0 0 0 3px 
 .editor-total strong {
   color: var(--primary-bright);
   font-size: 26px;
+  text-transform: none;
+}
+
+.editor-total-breakdown {
+  font-size: 11px;
+  font-weight: 700;
   text-transform: none;
 }
 

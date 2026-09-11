@@ -11,15 +11,30 @@ sys.path.insert(0, str(ROOT / "cloudflare_worker" / "src"))
 
 from rapyvet_api import (  # noqa: E402
     AsyncOdooService,
+    CatalogResponse,
+    CreateClientRequest,
     CreateOrderRequest,
     OrderLine,
     Seller,
     Settings,
+    UpdateOrderRequest,
     dominio_clientes_odoo,
     hash_seller_password,
     verify_seller_password,
     whatsapp_summary,
 )
+
+IVA_16 = {
+    "id": 1,
+    "name": "IVA 16%",
+    "amount": 16,
+    "amount_type": "percent",
+    "price_include": False,
+    "include_base_amount": False,
+    "is_base_affected": True,
+    "sequence": 1,
+    "children_tax_ids": [],
+}
 
 
 class FakeKV:
@@ -157,6 +172,117 @@ class CloudflareWorkerTests(unittest.IsolatedAsyncioTestCase):
                 seller_id=seller.id,
             )
         )
+
+    async def test_update_order_reports_updated_status(self) -> None:
+        self.service = FakeCloudflareOdooService()
+        written: dict[str, Any] = {}
+
+        async def fake_call(model: str, method: str, args: list[Any], kwargs: dict[str, Any] | None = None) -> Any:
+            if model == "sale.order" and method == "search_read":
+                return [{"id": 99, "state": "draft"}]
+            if model == "res.partner" and method == "search_read":
+                return [{"id": 10, "name": "Cliente Demo", "commercial_partner_id": [10, "Cliente Demo"]}]
+            if model == "product.product" and method == "search_read":
+                return [{"id": 5}]
+            if model == "sale.order" and method == "write":
+                written.update(args[1])
+                return True
+            if model == "sale.order" and method == "read":
+                return [{"id": 99, "name": "S00099", "state": "draft", "amount_untaxed": 100, "amount_tax": 16, "amount_total": 116}]
+            raise AssertionError(f"Unexpected call: {model}.{method}")
+
+        self.service._call = fake_call  # type: ignore[method-assign]
+        result = await self.service.update_order(
+            99,
+            UpdateOrderRequest(customer_id=10, lines=[OrderLine(product_id=5, quantity=1, unit_price=100)]),
+            seller=Seller(id=7, name="Vendedora Prueba", login="ventas@example.com"),
+        )
+
+        self.assertEqual(result.status, "Pedido actualizado")
+        self.assertEqual(result.total, 116)
+        self.assertEqual(written["order_line"][0], (5, 0, 0))
+
+    async def test_new_client_is_created_as_person_with_is_company(self) -> None:
+        self.service = FakeCloudflareOdooService()
+        created: dict[str, Any] = {}
+
+        async def fake_call(model: str, method: str, args: list[Any], kwargs: dict[str, Any] | None = None) -> Any:
+            if model == "res.partner" and method == "search_read":
+                return []
+            if model == "res.partner" and method == "create":
+                created.update(args[0])
+                return 55
+            if model == "res.partner" and method == "read":
+                return [{"id": 55, "name": "Cliente Nuevo", "email": "nuevo@example.com", "street": "Calle 123", "zip": "64000", "vat": ""}]
+            raise AssertionError(f"Unexpected call: {model}.{method}")
+
+        self.service._call = fake_call  # type: ignore[method-assign]
+        result = await self.service.create_client(
+            CreateClientRequest(name="Cliente Nuevo", email="nuevo@example.com", street="Calle 123", postal_code="64000")
+        )
+
+        self.assertTrue(result["created"])
+        self.assertIs(created["is_company"], False)
+        self.assertNotIn("company_type", created)
+
+    async def test_catalog_includes_taxes_for_prices_with_iva(self) -> None:
+        self.service = FakeCloudflareOdooService()
+
+        async def fake_call(model: str, method: str, args: list[Any], kwargs: dict[str, Any] | None = None) -> Any:
+            if model == "res.partner":
+                return []
+            if model == "product.product":
+                return [{"id": 5, "default_code": "NX1", "name": "NexGard", "list_price": 100, "categ_id": [1, "Antiparasitarios"], "taxes_id": [1]}]
+            if model == "account.tax":
+                return [IVA_16]
+            raise AssertionError(f"Unexpected call: {model}.{method}")
+
+        self.service._call = fake_call  # type: ignore[method-assign]
+        catalog = await self.service.catalog(force=True)
+
+        CatalogResponse(**catalog)
+        self.assertEqual(catalog["products"][0]["tax_ids"], [1])
+        self.assertEqual(catalog["taxes"][0]["amount"], 16.0)
+        self.assertFalse(catalog["taxes"][0]["price_include"])
+
+    async def test_catalog_still_loads_when_taxes_are_not_readable(self) -> None:
+        self.service = FakeCloudflareOdooService()
+
+        async def fake_call(model: str, method: str, args: list[Any], kwargs: dict[str, Any] | None = None) -> Any:
+            if model == "account.tax":
+                raise RuntimeError("Acceso denegado")
+            return []
+
+        self.service._call = fake_call  # type: ignore[method-assign]
+        catalog = await self.service.catalog(force=True)
+        self.assertEqual(catalog["taxes"], [])
+
+    async def test_statement_uses_invoice_date(self) -> None:
+        self.service = FakeCloudflareOdooService()
+
+        async def fake_call(model: str, method: str, args: list[Any], kwargs: dict[str, Any] | None = None) -> Any:
+            if model == "res.partner" and method == "search_read":
+                return [{"id": 10, "name": "Cliente Demo", "commercial_partner_id": [10, "Cliente Demo"]}]
+            if model == "account.move.line" and method == "search_read":
+                return [{
+                    "id": 1,
+                    "date": "2026-08-01",
+                    "invoice_date": "2026-07-28",
+                    "date_maturity": "2026-08-27",
+                    "move_id": [3, "INV/2026/01170 (S01174)"],
+                    "name": "",
+                    "ref": "S01174",
+                    "amount_residual": 5666.18,
+                    "debit": 5666.18,
+                    "credit": 0,
+                    "currency_id": False,
+                }]
+            raise AssertionError(f"Unexpected call: {model}.{method}")
+
+        self.service._call = fake_call  # type: ignore[method-assign]
+        statement = await self.service.customer_statement(10)
+        self.assertEqual(statement["lines"][0]["date"], "2026-07-28")
+        self.assertEqual(statement["lines"][0]["document"], "INV/2026/01170 (S01174)")
 
     def test_catalog_domain_includes_new_main_contacts(self) -> None:
         domain = dominio_clientes_odoo()
