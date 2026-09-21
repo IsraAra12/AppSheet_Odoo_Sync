@@ -1488,6 +1488,7 @@ function CartScreen({
 
 function ReviewScreen({
   customer,
+  seller,
   cart,
   pricing,
   note,
@@ -1498,6 +1499,7 @@ function ReviewScreen({
   onSubmit,
 }: {
   customer: Client;
+  seller: Seller;
   cart: CartLine[];
   pricing: Pricing;
   note: string;
@@ -1507,7 +1509,35 @@ function ReviewScreen({
   onBack: () => void;
   onSubmit: () => void;
 }) {
+  const [pdfNotice, setPdfNotice] = useState("");
   const totals = pricing.order(cart);
+  const preliminaryQuotation: QuotationPdfData = {
+    result: {
+      id: 0,
+      folio: "PRELIMINAR",
+      status: "Borrador local",
+      subtotal: totals.untaxed,
+      tax: totals.tax,
+      total: totals.total,
+      recovered: false,
+      whatsapp_message: "",
+      whatsapp_url: "",
+    },
+    customer,
+    seller,
+    note,
+    lines: cart.map((line) => ({ ...line, total: pricing.line(line).total })),
+  };
+
+  function downloadPreliminaryPdf() {
+    try {
+      downloadQuotationPdf(preliminaryQuotation);
+      setPdfNotice("PDF preliminar descargado. Aún no se ha creado la cotización oficial en Odoo.");
+    } catch {
+      setPdfNotice("No se pudo generar el PDF preliminar en este dispositivo. Intenta actualizar y descargar de nuevo.");
+    }
+  }
+
   return (
     <div className="screen review-screen">
       <button type="button" className="back-link" onClick={onBack}><ArrowLeft /> Volver al carrito</button>
@@ -1519,6 +1549,8 @@ function ReviewScreen({
       <label className="note-field"><span>Notas para la cotización <small>Opcional</small></span><textarea value={note} onChange={(event) => onNote(event.target.value)} maxLength={2000} placeholder="Horario de entrega, referencias u observaciones…" /></label>
       <section className="order-total"><div><span>Total con IVA</span><small>Subtotal {money(totals.untaxed)} · Impuestos {money(totals.tax)}</small><small>El total definitivo se confirma en Odoo.</small></div><strong>{money(totals.total)}</strong></section>
       <AnimatePresence initial={false}>{error && <motion.p className="submit-error" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}><CircleAlert /> {error}</motion.p>}</AnimatePresence>
+      <button type="button" className="button secondary wide review-pdf-button" disabled={busy} onClick={downloadPreliminaryPdf}><Download /> Descargar PDF preliminar</button>
+      <AnimatePresence initial={false}>{pdfNotice && <motion.p className="pdf-notice" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>{pdfNotice}</motion.p>}</AnimatePresence>
       <button type="button" className="button primary wide submit-order" disabled={busy} onClick={onSubmit}>{busy ? <LoaderCircle className="spin" /> : <BadgeCheck />}{busy ? "Enviando a Odoo…" : "Crear cotización en Odoo"}</button>
       <p className="idempotency-note">Puedes reintentar con seguridad: esta captura tiene una referencia única que evita cotizaciones duplicadas.</p>
     </div>
@@ -3211,7 +3243,7 @@ export function SalesApp() {
               {screen === "clients" && <ClientScreen clients={catalog.clients} selectedId={customerId} onSelect={selectClient} onStatement={openStatement} onNew={() => { setClientError(""); setNewClientOpen(true); }} />}
               {screen === "products" && <ProductScreen products={catalog.products} cart={cart} pricing={pricing} onAdd={addProduct} onDecrease={decreaseProduct} onPromo={setPromoProduct} onCart={() => setScreen("cart")} />}
               {screen === "cart" && <CartScreen cart={cart} pricing={pricing} onChange={updateLine} onRemove={removeLine} onProducts={() => setScreen(customer ? "products" : "clients")} onReview={() => customer ? setScreen("review") : setScreen("clients")} />}
-              {screen === "review" && customer && <ReviewScreen customer={customer} cart={cart} pricing={pricing} note={note} busy={submitBusy} error={submitError} onNote={setNote} onBack={() => setScreen("cart")} onSubmit={() => void submitOrder()} />}
+              {screen === "review" && customer && <ReviewScreen customer={customer} seller={session.seller} cart={cart} pricing={pricing} note={note} busy={submitBusy} error={submitError} onNote={setNote} onBack={() => setScreen("cart")} onSubmit={() => void submitOrder()} />}
               {screen === "success" && orderResult && <SuccessScreen result={orderResult} title={successTitle} quotation={successQuotation} onNew={startNewOrder} />}
               {screen === "history" && <HistoryScreen seller={session.seller} onRefresh={() => void loadCatalog(false)} onEdit={openOrderEditor} />}
               {screen === "statement" && statementCustomerId && <StatementScreen customerId={statementCustomerId} initialCustomer={catalog.clients.find((item) => item.id === statementCustomerId)} onBack={() => setScreen("clients")} />}

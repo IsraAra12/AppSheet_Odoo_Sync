@@ -243,7 +243,7 @@ export function buildQuotationPdfBytes(data: QuotationPdfData) {
 
       const infoWidth = (RIGHT - LEFT - 20) / 3;
       const infoItems: [string, string][] = [
-        ["Folio Odoo", data.result.folio || `#${data.result.id}`],
+        ["Referencia", data.result.folio || `#${data.result.id}`],
         ["Vendedor", data.seller?.name || "RapyVet"],
         ["Estado", data.result.status || "Cotización"],
       ];

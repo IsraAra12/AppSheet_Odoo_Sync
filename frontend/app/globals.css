@@ -968,6 +968,8 @@ textarea:focus { border-color: rgba(253, 170, 249, 0.38); box-shadow: 0 0 0 3px 
 .note-field { display: grid; gap: 8px; margin-top: 13px; padding: 20px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
 .note-field small { color: var(--faint); font-weight: 500; }
 .submit-error { margin-top: 13px; padding: 13px; border: 1px solid rgba(255, 170, 163, 0.25); border-radius: var(--radius-md); background: rgba(255, 170, 163, 0.08); }
+.review-pdf-button { min-height: 52px; margin-top: 13px; }
+.pdf-notice { margin-top: 9px; padding: 11px 13px; border: 1px solid rgba(253, 170, 249, 0.18); border-radius: var(--radius-md); background: rgba(253, 170, 249, 0.08); color: var(--muted); font-size: 12px; text-align: center; }
 .submit-order { min-height: 56px; margin-top: 13px; }
 .idempotency-note { margin: 10px auto 0; color: var(--faint); font-size: 10px; text-align: center; }
 
