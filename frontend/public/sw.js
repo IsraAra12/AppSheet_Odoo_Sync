@@ -1,4 +1,4 @@
-const CACHE = "rapyvet-shell-v5";
+const CACHE = "rapyvet-shell-v6";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {

@@ -980,6 +980,7 @@ textarea:focus { border-color: rgba(253, 170, 249, 0.38); box-shadow: 0 0 0 3px 
 .success-total small { color: var(--faint); font-size: 11px; }
 .success-total strong { font-size: 32px; color: var(--primary-bright); }
 .success-actions { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.share-notice { max-width: 520px; margin-top: 12px; padding: 12px 14px; border: 1px solid rgba(253, 170, 249, 0.18); border-radius: 18px; background: rgba(253, 170, 249, 0.08); color: var(--muted); font-size: 12px; }
 
 .bottom-nav {
   grid-row: 4;

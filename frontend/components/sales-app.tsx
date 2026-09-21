@@ -33,6 +33,7 @@ import {
   RotateCcw,
   Search,
   Send,
+  Share2,
   ShieldCheck,
   ShoppingBag,
   Sparkles,
@@ -91,6 +92,13 @@ import {
   updateOutboxStatus,
 } from "@/lib/outbox";
 import { money, odooDate } from "@/lib/format";
+import {
+  buildQuotationWhatsAppMessage,
+  buildQuotationWhatsAppUrl,
+  downloadQuotationPdf,
+  shareQuotationPdf,
+  type QuotationPdfData,
+} from "@/lib/quotation-pdf";
 import { downloadStatementPdf } from "@/lib/statement-pdf";
 import { createPricing, type Pricing, type TaxStatus } from "@/lib/taxes";
 import type {
@@ -1470,8 +1478,8 @@ function CartScreen({
               ))}
             </AnimatePresence>
           </motion.div>
-          <section className="total-card"><div><span>Total con IVA</span><small>Subtotal {money(totals.untaxed)} · Impuestos {money(totals.tax)}</small><small>Odoo confirma el total final al crear el pedido.</small></div><strong>{money(totals.total)}</strong></section>
-          <button type="button" className="button primary wide checkout-button" onClick={onReview}><ClipboardCheck /> Revisar pedido <ArrowRight /></button>
+          <section className="total-card"><div><span>Total con IVA</span><small>Subtotal {money(totals.untaxed)} · Impuestos {money(totals.tax)}</small><small>Odoo confirma el total final al crear la cotización.</small></div><strong>{money(totals.total)}</strong></section>
+          <button type="button" className="button primary wide checkout-button" onClick={onReview}><ClipboardCheck /> Revisar cotización <ArrowRight /></button>
         </>
       )}
     </div>
@@ -1503,26 +1511,65 @@ function ReviewScreen({
   return (
     <div className="screen review-screen">
       <button type="button" className="back-link" onClick={onBack}><ArrowLeft /> Volver al carrito</button>
-      <div className="screen-title-row"><div><span className="eyebrow">Paso 3 de 3</span><h1>Revisa el pedido</h1><p>El pedido se conservará si la conexión tarda o se interrumpe.</p></div></div>
+      <div className="screen-title-row"><div><span className="eyebrow">Paso 3 de 3</span><h1>Revisa la cotización</h1><p>La captura se conservará si la conexión tarda o se interrumpe.</p></div></div>
       <div className="review-grid">
         <section className="review-card"><span className="review-icon"><UserRound /></span><div><small>Cliente</small><h2>{customer.name}</h2><p>{[customer.street, customer.city, customer.email].filter(Boolean).join(" · ")}</p></div></section>
         <section className="review-card products-review"><span className="review-icon"><ShoppingBag /></span><div className="review-body"><small>Productos</small><h2>{cart.reduce((sum, line) => sum + line.quantity, 0)} unidades</h2><ul>{cart.map((line) => <li key={line.id}><span>{line.quantity} × {line.name}{line.free ? " · Gratis" : ""}</span><strong>{money(pricing.line(line).total)}</strong></li>)}</ul></div></section>
       </div>
-      <label className="note-field"><span>Notas para el pedido <small>Opcional</small></span><textarea value={note} onChange={(event) => onNote(event.target.value)} maxLength={2000} placeholder="Horario de entrega, referencias u observaciones…" /></label>
+      <label className="note-field"><span>Notas para la cotización <small>Opcional</small></span><textarea value={note} onChange={(event) => onNote(event.target.value)} maxLength={2000} placeholder="Horario de entrega, referencias u observaciones…" /></label>
       <section className="order-total"><div><span>Total con IVA</span><small>Subtotal {money(totals.untaxed)} · Impuestos {money(totals.tax)}</small><small>El total definitivo se confirma en Odoo.</small></div><strong>{money(totals.total)}</strong></section>
       <AnimatePresence initial={false}>{error && <motion.p className="submit-error" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}><CircleAlert /> {error}</motion.p>}</AnimatePresence>
-      <button type="button" className="button primary wide submit-order" disabled={busy} onClick={onSubmit}>{busy ? <LoaderCircle className="spin" /> : <BadgeCheck />}{busy ? "Enviando a Odoo…" : "Crear pedido en Odoo"}</button>
-      <p className="idempotency-note">Puedes reintentar con seguridad: esta captura tiene una referencia única que evita pedidos duplicados.</p>
+      <button type="button" className="button primary wide submit-order" disabled={busy} onClick={onSubmit}>{busy ? <LoaderCircle className="spin" /> : <BadgeCheck />}{busy ? "Enviando a Odoo…" : "Crear cotización en Odoo"}</button>
+      <p className="idempotency-note">Puedes reintentar con seguridad: esta captura tiene una referencia única que evita cotizaciones duplicadas.</p>
     </div>
   );
 }
 
-function SuccessScreen({ result, onNew, title = "Pedido registrado" }: { result: OrderResult; onNew: () => void; title?: string }) {
+function SuccessScreen({
+  result,
+  onNew,
+  title = "Cotización creada",
+  quotation,
+}: {
+  result: OrderResult;
+  onNew: () => void;
+  title?: string;
+  quotation?: QuotationPdfData;
+}) {
+  const [shareNotice, setShareNotice] = useState("");
   const statusMessage = result.recovered
-    ? "Este pedido ya estaba registrado; recuperamos el folio para evitar duplicados."
+    ? "Esta cotización ya estaba registrada; recuperamos el folio para evitar duplicados."
     : result.status === "sale" || result.status === "done"
       ? "Odoo confirmó la operación correctamente."
-      : "Odoo registró el pedido correctamente.";
+      : "Odoo registró la cotización correctamente.";
+  const whatsappHref = quotation
+    ? buildQuotationWhatsAppUrl(buildQuotationWhatsAppMessage(quotation), quotation.customer.phone)
+    : result.whatsapp_url;
+
+  function savePdf() {
+    if (!quotation) return;
+    try {
+      downloadQuotationPdf(quotation);
+      setShareNotice("PDF descargado. Puedes adjuntarlo en WhatsApp si tu navegador no permite compartir directo.");
+    } catch {
+      setShareNotice("No se pudo generar el PDF en este dispositivo. Intenta actualizar y descargar de nuevo.");
+    }
+  }
+
+  async function sharePdf() {
+    if (!quotation) return;
+    setShareNotice("");
+    try {
+      const shared = await shareQuotationPdf(quotation);
+      if (shared) {
+        setShareNotice("Selecciona WhatsApp en la hoja de compartir para enviar el PDF al cliente.");
+        return;
+      }
+      setShareNotice("Este navegador no permite compartir archivos directo. Descarga el PDF y usa WhatsApp como respaldo.");
+    } catch {
+      setShareNotice("No se compartió el PDF. Si WhatsApp no apareció, descarga el archivo y adjúntalo manualmente.");
+    }
+  }
 
   return (
     <div className="screen success-screen">
@@ -1532,9 +1579,12 @@ function SuccessScreen({ result, onNew, title = "Pedido registrado" }: { result:
       <p>{statusMessage}</p>
       <section className="success-total"><span>Total en Odoo</span><strong>{money(result.total)}</strong><small>Subtotal {money(result.subtotal)} · Impuestos {money(result.tax)}</small></section>
       <div className="success-actions">
-        <a className="button whatsapp wide" href={result.whatsapp_url} target="_blank" rel="noreferrer">Compartir por WhatsApp <ArrowRight /></a>
-        <button type="button" className="button secondary wide" onClick={onNew}><CirclePlus /> Capturar otro pedido</button>
+        {quotation && <button type="button" className="button primary wide" onClick={() => void sharePdf()}><Share2 /> Compartir PDF</button>}
+        {quotation && <button type="button" className="button secondary wide" onClick={savePdf}><Download /> Descargar PDF</button>}
+        <a className="button whatsapp wide" href={whatsappHref} target="_blank" rel="noreferrer">Mensaje WhatsApp <ArrowRight /></a>
+        <button type="button" className="button secondary wide" onClick={onNew}><CirclePlus /> Capturar otra cotización</button>
       </div>
+      {shareNotice && <p className="share-notice">{shareNotice}</p>}
     </div>
   );
 }
@@ -2804,7 +2854,7 @@ export function SalesApp() {
   const [tutorialAutoChecked, setTutorialAutoChecked] = useState(false);
   const [statementCustomerId, setStatementCustomerId] = useState<number | null>(null);
   const [editingOrderId, setEditingOrderId] = useState<number | null>(null);
-  const [successTitle, setSuccessTitle] = useState("Pedido registrado");
+  const [successTitle, setSuccessTitle] = useState("Cotización creada");
   const pwaInstall = usePwaInstall();
   const mainRef = useRef<HTMLElement>(null);
   const pricing = useMemo(() => createPricing(catalog?.products ?? [], catalog?.taxes ?? []), [catalog]);
@@ -3005,6 +3055,7 @@ export function SalesApp() {
 
       updateOutboxStatus(outboxItem.id, "confirmed", { result });
       setOrderResult(result);
+      setSuccessTitle("Cotización creada");
       setScreen("success");
       localStorage.removeItem(DRAFT_KEY);
     } catch (caught) {
@@ -3014,7 +3065,7 @@ export function SalesApp() {
       } else {
         const errorMsg = caught instanceof Error ? caught.message : "Error de red";
         updateOutboxStatus(outboxItem.id, "pending", { errorMessage: errorMsg });
-        setToast("Sin señal directa. Pedido guardado en tu Bandeja; se enviará al recuperar conexión.");
+        setToast("Sin señal directa. Cotización guardada en tu Bandeja; se enviará al recuperar conexión.");
         localStorage.removeItem(DRAFT_KEY);
         setScreen("outbox");
       }
@@ -3036,7 +3087,7 @@ export function SalesApp() {
     setIdempotencyKey(freshOrderKey());
     setOrderResult(null);
     setSubmitError("");
-    setSuccessTitle("Pedido registrado");
+    setSuccessTitle("Cotización creada");
     setScreen("clients");
   }
 
@@ -3114,6 +3165,15 @@ export function SalesApp() {
 
   const customer = catalog.clients.find((item) => item.id === customerId);
   const cartCount = cart.reduce((sum, line) => sum + line.quantity, 0);
+  const successQuotation: QuotationPdfData | undefined = orderResult && customer && cart.length && successTitle === "Cotización creada"
+    ? {
+        result: orderResult,
+        customer,
+        seller: session.seller,
+        note,
+        lines: cart.map((line) => ({ ...line, total: pricing.line(line).total })),
+      }
+    : undefined;
 
   return (
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"} transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}>
@@ -3129,7 +3189,7 @@ export function SalesApp() {
           onOutbox={() => setScreen("outbox")}
           onLogout={logout}
         />
-        {offline && <div className="offline-banner"><WifiOff size={15} /> Usando el catálogo guardado. El pedido se enviará cuando haya conexión.<button type="button" onClick={() => void loadCatalog(true)}><RefreshCw size={15} /> Reintentar</button></div>}
+        {offline && <div className="offline-banner"><WifiOff size={15} /> Usando el catálogo guardado. La cotización se enviará cuando haya conexión.<button type="button" onClick={() => void loadCatalog(true)}><RefreshCw size={15} /> Reintentar</button></div>}
         <main className="app-main" ref={mainRef}>
           <AnimatePresence initial={false} mode="wait">
             <motion.div key={screen} {...pageMotion} className="screen-motion">
@@ -3152,7 +3212,7 @@ export function SalesApp() {
               {screen === "products" && <ProductScreen products={catalog.products} cart={cart} pricing={pricing} onAdd={addProduct} onDecrease={decreaseProduct} onPromo={setPromoProduct} onCart={() => setScreen("cart")} />}
               {screen === "cart" && <CartScreen cart={cart} pricing={pricing} onChange={updateLine} onRemove={removeLine} onProducts={() => setScreen(customer ? "products" : "clients")} onReview={() => customer ? setScreen("review") : setScreen("clients")} />}
               {screen === "review" && customer && <ReviewScreen customer={customer} cart={cart} pricing={pricing} note={note} busy={submitBusy} error={submitError} onNote={setNote} onBack={() => setScreen("cart")} onSubmit={() => void submitOrder()} />}
-              {screen === "success" && orderResult && <SuccessScreen result={orderResult} title={successTitle} onNew={startNewOrder} />}
+              {screen === "success" && orderResult && <SuccessScreen result={orderResult} title={successTitle} quotation={successQuotation} onNew={startNewOrder} />}
               {screen === "history" && <HistoryScreen seller={session.seller} onRefresh={() => void loadCatalog(false)} onEdit={openOrderEditor} />}
               {screen === "statement" && statementCustomerId && <StatementScreen customerId={statementCustomerId} initialCustomer={catalog.clients.find((item) => item.id === statementCustomerId)} onBack={() => setScreen("clients")} />}
               {screen === "orderEdit" && editingOrderId && <OrderEditScreen orderId={editingOrderId} clients={catalog.clients} products={catalog.products} pricing={pricing} onBack={() => setScreen("history")} onSaved={(result) => { setOrderResult(result); setSuccessTitle("Pedido actualizado"); setEditingOrderId(null); setScreen("success"); setToast("Pedido actualizado en Odoo"); }} />}
