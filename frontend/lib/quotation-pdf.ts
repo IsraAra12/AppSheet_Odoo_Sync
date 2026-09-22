@@ -151,41 +151,26 @@ function filenameBase(value: string) {
     .slice(0, 52) || "cliente";
 }
 
-function normalizeWhatsAppPhone(phone: string) {
-  const digits = (phone || "").replace(/\D/g, "");
-  if (!digits) return "";
-  if (digits.length === 10) return `52${digits}`;
-  if (digits.startsWith("00") && digits.length > 12) return digits.slice(2);
-  return digits;
-}
-
 export function quotationPdfFilename(data: QuotationPdfData) {
   const folio = filenameBase(data.result.folio || "cotizacion");
   const customer = filenameBase(data.customer.name || "cliente");
   return `cotizacion-${folio}-${customer}.pdf`;
 }
 
-export function buildQuotationWhatsAppUrl(message: string, phone?: string) {
-  const encoded = encodeURIComponent(message);
-  const normalized = normalizeWhatsAppPhone(phone || "");
-  return normalized ? `https://wa.me/${normalized}?text=${encoded}` : `https://wa.me/?text=${encoded}`;
+export function buildQuotationWhatsAppUrl(message: string) {
+  return `https://wa.me/?text=${encodeURIComponent(message)}`;
 }
 
 export function buildQuotationWhatsAppMessage(data: QuotationPdfData) {
   const rows = [
-    `Cotización RapyVet ${data.result.folio || `#${data.result.id}`}`,
-    `Cliente: ${data.customer.name || "Cliente"}`,
+    data.customer.name || "Cliente",
   ];
   if (data.seller?.name) rows.push(`Vendedor: ${data.seller.name}`);
-  rows.push(`Total: ${money(data.result.total)}`);
   rows.push("");
-  rows.push("Productos:");
   data.lines.forEach((line) => {
     const suffix = line.free ? " (GRATIS)" : "";
-    rows.push(`- ${line.quantity} x ${line.name}${suffix}`);
+    rows.push(`${line.quantity} x ${line.name}${suffix}`);
   });
-  rows.push("");
-  rows.push("Te comparto el PDF de la cotización para revisión.");
   return rows.join("\n");
 }
 

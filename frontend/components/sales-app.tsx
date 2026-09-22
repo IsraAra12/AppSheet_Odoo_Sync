@@ -1575,7 +1575,7 @@ function SuccessScreen({
       ? "Odoo confirmó la operación correctamente."
       : "Odoo registró la cotización correctamente.";
   const whatsappHref = quotation
-    ? buildQuotationWhatsAppUrl(buildQuotationWhatsAppMessage(quotation), quotation.customer.phone)
+    ? buildQuotationWhatsAppUrl(buildQuotationWhatsAppMessage(quotation))
     : result.whatsapp_url;
 
   function savePdf() {
