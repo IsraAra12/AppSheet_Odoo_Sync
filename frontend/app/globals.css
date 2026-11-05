@@ -2503,6 +2503,28 @@ textarea:focus { border-color: rgba(253, 170, 249, 0.38); box-shadow: 0 0 0 3px 
   .editor-line-actions .danger-button { width: 100%; }
 }
 
+/* Pantalla de carga invisible después de cada acción (components/action-loading-overlay.tsx):
+   capa transparente que bloquea toques y clics, sin nada visible. */
+.action-loading-root { display: contents; }
+.action-loading {
+  z-index: 1000;
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  touch-action: none;
+}
+.action-loading-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
