@@ -25,6 +25,8 @@ Configuración en Cloudflare Pages:
 - Root directory: `frontend`
 - Variable pública:
   - `NEXT_PUBLIC_API_URL=https://rapyvet-pedidos-api.angelauriazul25.workers.dev`
+  - Ya está fija en `frontend/.env.production`, así que `pnpm build` la usa sin configurar nada.
+    Sin ella la app apunta a `http://localhost:8080` y en producción no puede conectarse al servidor.
 
 El frontend ya está configurado con `output: "export"` en `frontend/next.config.ts`.
 
