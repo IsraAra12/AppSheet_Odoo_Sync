@@ -48,23 +48,6 @@ function storeSession(session: SessionInfo) {
   localStorage.setItem(SESSION_INFO_KEY, JSON.stringify(session));
 }
 
-let pendingRequests = 0;
-const pendingListeners = new Set<(count: number) => void>();
-
-function changePendingRequests(delta: number) {
-  pendingRequests += delta;
-  pendingListeners.forEach((listener) => listener(pendingRequests));
-}
-
-/** Avisa cuántas solicitudes al servidor siguen en curso (lo usa la pantalla de carga). */
-export function subscribePendingRequests(listener: (count: number) => void) {
-  pendingListeners.add(listener);
-  listener(pendingRequests);
-  return () => {
-    pendingListeners.delete(listener);
-  };
-}
-
 async function request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
@@ -73,25 +56,20 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
     if (token) headers.set("Authorization", `Bearer ${token}`);
   }
 
-  changePendingRequests(1);
+  let response: Response;
   try {
-    let response: Response;
-    try {
-      response = await fetch(`${API_URL}${path}`, { ...init, headers });
-    } catch {
-      throw new ApiError("No hay conexión con el servidor. Revisa tu señal e intenta otra vez.", 0);
-    }
-
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      if (response.status === 401 && authenticated) clearSession();
-      const detail = typeof body.detail === "string" ? body.detail : "No fue posible completar la operación.";
-      throw new ApiError(detail, response.status);
-    }
-    return body as T;
-  } finally {
-    changePendingRequests(-1);
+    response = await fetch(`${API_URL}${path}`, { ...init, headers });
+  } catch {
+    throw new ApiError("No hay conexión con el servidor. Revisa tu señal e intenta otra vez.", 0);
   }
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401 && authenticated) clearSession();
+    const detail = typeof body.detail === "string" ? body.detail : "No fue posible completar la operación.";
+    throw new ApiError(detail, response.status);
+  }
+  return body as T;
 }
 
 export async function login(loginName: string, password: string) {
