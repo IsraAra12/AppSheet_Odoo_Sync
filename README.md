@@ -64,7 +64,7 @@ Edita `.env` con los datos de tu entorno.
 .\.backend-venv\Scripts\python.exe -m uvicorn backend.main:app --reload --port 8080
 ```
 
-El estado de la API se puede consultar en [`/health`](http://localhost:8080/health) y su documentación interactiva en [`/docs`](http://localhost:8080/docs).
+Consulta el estado de la API en [`/health`](http://localhost:8080/health) y el esquema de sus rutas en [`/openapi.json`](http://localhost:8080/openapi.json).
 
 ### 2. Iniciar la PWA
 
